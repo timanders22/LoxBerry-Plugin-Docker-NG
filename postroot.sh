@@ -87,7 +87,13 @@ then
 	docker pull portainer/portainer-ce:latest
 
 	# start portainer container
-	docker run --volume=/var/run/docker.sock:/var/run/docker.sock --volume=/opt/portainer:/data -p=9000:9000 --name="portainer" --restart="unless-stopped" --detach=true portainer/portainer-ce:latest
+	#
+	# Portainer CE ab 2.19 startet ohne --http-enabled NUR mit HTTPS auf 9443.
+	# Ohne dieses Flag laeuft der Container zwar, aber auf Port 9000 lauscht
+	# nichts - der Browser meldet dann "Verbindung abgelehnt".
+	# Deshalb: HTTP ausdruecklich einschalten und zusaetzlich 9443 mappen,
+	# damit auch der HTTPS-Zugang erreichbar ist.
+	docker run --volume=/var/run/docker.sock:/var/run/docker.sock --volume=/opt/portainer:/data -p=9000:9000 -p=9443:9443 --name="portainer" --restart="unless-stopped" --detach=true portainer/portainer-ce:latest --http-enabled
 fi
 
 # Exit with Status 0

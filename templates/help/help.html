@@ -1,7 +1,56 @@
-<p>
-	<TMPL_VAR HELP.INTRO>
-</p>
-<p>
-	<TMPL_VAR HELP.LINK_INFO> 
-	<a href="<TMPL_VAR HELP.LINK>"><TMPL_VAR HELP.LINK_TEXT></a>
-</p>
+<h3>Docker NG</h3>
+
+<p>Docker l&auml;sst zus&auml;tzliche Programme in abgeschlossenen Containern auf dem
+LoxBerry laufen. <b>Portainer</b> ist die Oberfl&auml;che dazu.</p>
+
+<h3>Verh&auml;ltnis zum Plugin &bdquo;Docker&ldquo;</h3>
+
+<p>Docker NG ist ein <b>eigenst&auml;ndiges Plugin</b>, kein Update des &auml;lteren
+Docker-Plugins von M. Miklis. Es benutzt einen eigenen Ordner
+(<span class="sm-mono">dockerng</span>) und eine eigene Kennung &mdash; beide lassen sich
+nebeneinander installieren, und wer beim Original bleiben will, beh&auml;lt es
+unver&auml;ndert. Der Originalautor hat mitgeteilt, dass er weder Docker noch einen
+LoxBerry weiter betreibt.</p>
+
+<h3>Die drei Fallstricke bei Portainer</h3>
+
+<ol>
+<li><b>Port 9000 blieb stumm.</b> Ab Portainer CE 2.19 lauscht ohne
+<span class="sm-mono">--http-enabled</span> nichts mehr auf Port 9000. Der Container
+l&auml;uft, der Browser meldet nur &bdquo;Verbindung abgelehnt&ldquo; &mdash; das sieht aus
+wie eine fehlgeschlagene Installation. Das Installationsskript setzt das
+Kennzeichen und gibt zus&auml;tzlich Port 9443 frei.</li>
+
+<li><b>Der Setup-Token steht nur im Protokoll.</b> Ab 2.43 beziehungsweise 2.39.4
+verlangt die Ersteinrichtung einen Token, der nirgends angezeigt wird und nach
+f&uuml;nf Minuten verf&auml;llt. Zwei Kn&ouml;pfe im Reiter <i>Einstellungen</i>
+holen ihn beziehungsweise starten den Container neu und holen einen frischen.</li>
+
+<li><b>Portainer l&auml;sst sich nicht einbetten.</b> Die Oberfl&auml;che schickt
+<span class="sm-mono">X-Frame-Options</span> und verweigert die Anzeige in einem Rahmen.
+Deshalb &ouml;ffnet der Knopf ein eigenes Fenster.</li>
+</ol>
+
+<h3>Der Endpunkt f&uuml;r Loxone</h3>
+
+<p>Er liegt im unangemeldeten Bereich, damit Loxone ihn ohne Zugangsdaten
+erreicht, und ist durch ein Merkwort gesch&uuml;tzt. Verglichen wird mit
+<span class="sm-mono">hash_equals</span>, also in gleichbleibender Zeit.</p>
+
+<p><b>Der Endpunkt ist rein lesend.</b> Er startet und stoppt nichts. Ein Endpunkt
+im unangemeldeten Bereich, der Container anhalten kann, w&auml;re eine
+Angriffsfl&auml;che ohne Gegenwert &mdash; geschaltet wird in Portainer.</p>
+
+<h3>Warum es keinen MQTT-Reiter gibt</h3>
+
+<p>Docker NG f&uuml;hrt keinen Dienst, der zyklisch ver&ouml;ffentlichen
+k&ouml;nnte. Loxone holt den Zustand &uuml;ber den HTTP-Endpunkt. Ein MQTT-Weg
+w&auml;re nachr&uuml;stbar, ist aber ungebaut &mdash; und wird deshalb auch nicht
+behauptet.</p>
+
+<h3>Was ungepr&uuml;ft ist</h3>
+
+<p>Die Fassung 1.0.0 ist auf einem LoxBerry mit Debian trixie und PHP 8
+entstanden. Nicht gepr&uuml;ft ist das Verhalten auf &auml;lteren
+LoxBerry-St&auml;nden &mdash; deshalb steht
+<span class="sm-mono">LB_MINIMUM=3.0.0</span>.</p>

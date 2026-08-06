@@ -1,0 +1,337 @@
+<?php
+/**
+ * Docker NG - gemeinsame Bibliothek
+ *
+ * Pfade, Konfiguration, Merkwort, Sprache, Docker- und Portainer-Zugriff
+ * sowie die Loxone-Importvorlage.
+ *
+ * Sie liegt unter html/ und NICHT unter htmlauth/, weil der Loxone-Endpunkt
+ * sie ebenfalls braucht. Die Oberflaeche laedt sie von dort - eine zweite
+ * Kopie waere die haeufigste Ursache dafuer, dass zwei Dateien gleichen
+ * Namens auseinanderlaufen.
+ *
+ * Alle Bezeichner tragen das Kuerzel dk_, weil LBWeb::lbheader() eigene globale
+ * Variablen setzt und es sonst zu Namenskollisionen kommt.
+ */
+
+/* ---------------- Pfade ----------------
+ *
+ * Der Pluginordner wird NICHT fest verdrahtet, sondern aus dem Ablageort
+ * abgeleitet. Der MD5-Schluessel in der plugindatabase.json haengt an
+ * Autorenname, E-Mail und Plugin-Name - wer ihn fest einbaut, bricht bei jedem
+ * Fork. Der Ordnername dagegen steht fest.
+ */
+function dk_paths()
+{
+    static $p = null;
+    if ($p !== null) { return $p; }
+
+    $home = getenv('LBHOMEDIR');
+    if (!$home || !is_dir($home)) { $home = '/opt/loxberry'; }
+
+    // .../webfrontend/html/dk_lib.php  ->  Pluginordner
+    $ordner = 'dockerng';
+    foreach (array(getenv('LBPPLUGINDIR'), 'dockerng') as $kand) {
+        if ($kand !== false && $kand !== null && $kand !== '') { $ordner = $kand; break; }
+    }
+
+    $p = array(
+        'home'      => $home,
+        'plugin'    => $ordner,
+        'config'    => $home . '/config/plugins/' . $ordner . '/dockerng.json',
+        'configdir' => $home . '/config/plugins/' . $ordner,
+        'logdir'    => $home . '/log/plugins/' . $ordner,
+        'log'       => $home . '/log/plugins/' . $ordner . '/dockerng.log',
+    );
+    return $p;
+}
+
+/* ---------------- Konfiguration ---------------- */
+
+function dk_vorgaben()
+{
+    return array(
+        'portainer_port' => 9000,
+        'portainer_name' => 'portainer',
+        'aktionstoken'   => '',
+    );
+}
+
+function dk_json_lesen($pfad)
+{
+    if (!@is_file($pfad)) { return array(); }
+    $roh = @file_get_contents($pfad);
+    if ($roh === false || trim($roh) === '') { return array(); }
+    $d = json_decode($roh, true);
+    return is_array($d) ? $d : array();
+}
+
+function dk_config()
+{
+    static $cfg = null;
+    if ($cfg !== null) { return $cfg; }
+    $p = dk_paths();
+    $cfg = array_merge(dk_vorgaben(), dk_json_lesen($p['config']));
+
+    // Grenzen durchsetzen, statt Werte ungeprueft weiterzureichen.
+    $cfg['portainer_port'] = max(1, min(65535, (int) $cfg['portainer_port']));
+    $name = trim((string) $cfg['portainer_name']);
+    $cfg['portainer_name'] = preg_match('/^[A-Za-z0-9_.\-]{1,64}$/', $name) ? $name : 'portainer';
+    $cfg['aktionstoken']   = (string) $cfg['aktionstoken'];
+    return $cfg;
+}
+
+function dk_config_schreiben($cfg)
+{
+    $p = dk_paths();
+    if (!@is_dir($p['configdir'])) { @mkdir($p['configdir'], 0755, true); }
+    $ok = @file_put_contents($p['config'],
+        json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    if ($ok !== false) { @chmod($p['config'], 0600); }
+    return $ok !== false;
+}
+
+/* ---------------- Merkwort fuer den Endpunkt ----------------
+ *
+ * Wird beim ersten Oeffnen der Oberflaeche erzeugt und steckt danach in den
+ * Adressen im Miniserver - deshalb nur auf ausdruecklichen Wunsch neu wuerfeln.
+ */
+function dk_token_neu($laenge = 24)
+{
+    $zeichen = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    $aus = '';
+    for ($i = 0; $i < $laenge; $i++) {
+        $aus .= $zeichen[random_int(0, strlen($zeichen) - 1)];
+    }
+    return $aus;
+}
+
+function dk_token()
+{
+    $cfg = dk_config();
+    if (trim($cfg['aktionstoken']) === '') {
+        $cfg['aktionstoken'] = dk_token_neu();
+        dk_config_schreiben($cfg);
+    }
+    return (string) $cfg['aktionstoken'];
+}
+
+/* ---------------- Sprache ----------------
+ *
+ * Englisch ist die Rueckfallebene, nicht Deutsch: wer eine dritte Sprache
+ * eingestellt hat, versteht eher Englisch. Die Datei wird zweistufig gesucht,
+ * damit derselbe Block im installierten Plugin UND im entpackten Archiv traegt.
+ */
+function dk_sprache()
+{
+    $sprache = 'de';
+    if (class_exists('LBSystem', false) && method_exists('LBSystem', 'lblanguage')) {
+        $sprache = LBSystem::lblanguage();
+    } elseif (getenv('LBLANG')) {
+        $sprache = getenv('LBLANG');
+    }
+    $sprache = strtolower(substr((string) $sprache, 0, 2));
+    return in_array($sprache, array('de', 'en'), true) ? $sprache : 'en';
+}
+
+function dk_t($schluessel)
+{
+    static $texte = null;
+    if ($texte === null) {
+        $p = dk_paths();
+        $pfad = $p['home'] . '/templates/plugins/' . $p['plugin'] . '/lang';
+        if (!@is_dir($pfad)) {
+            // Archivfall: drei Ebenen ueber dieser Bibliothek liegt die Wurzel.
+            $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
+        }
+        $texte = @parse_ini_file($pfad . '/language_' . dk_sprache() . '.ini', true, INI_SCANNER_RAW);
+        if (!is_array($texte)) { $texte = array(); }
+        $rueck = @parse_ini_file($pfad . '/language_en.ini', true, INI_SCANNER_RAW);
+        if (is_array($rueck)) { $texte = array_replace_recursive($rueck, $texte); }
+    }
+    list($a, $s) = array_pad(explode('.', $schluessel, 2), 2, '');
+    return isset($texte[$a][$s]) ? $texte[$a][$s] : $schluessel;
+}
+
+function dk_e($wert)
+{
+    return htmlspecialchars((string) $wert, ENT_QUOTES, 'UTF-8');
+}
+
+/* ---------------- Docker ---------------- */
+
+/** Pfad zum docker-Programm, oder Leerstring. */
+function dk_bin()
+{
+    static $pfad = null;
+    if ($pfad === null) {
+        $pfad = trim((string) @shell_exec('command -v docker 2>/dev/null'));
+    }
+    return $pfad;
+}
+
+function dk_version()
+{
+    if (dk_bin() === '') { return ''; }
+    return trim((string) @shell_exec('docker --version 2>&1'));
+}
+
+/**
+ * Liste aller Container.
+ *
+ * Getrennt wird an Tabulatoren, nicht an Leerzeichen: Abbildnamen und
+ * Zustandstexte enthalten selbst welche ("Up 3 hours (healthy)").
+ */
+function dk_container()
+{
+    if (dk_bin() === '') { return array(); }
+    $roh = (string) @shell_exec("docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}' 2>/dev/null");
+    $liste = array();
+    foreach (explode("\n", trim($roh)) as $zeile) {
+        if (trim($zeile) === '') { continue; }
+        $t = explode("\t", $zeile);
+        if (count($t) < 3) { continue; }
+        $liste[] = array(
+            'name'   => $t[0],
+            'image'  => $t[1],
+            'status' => $t[2],
+            'laeuft' => stripos($t[2], 'Up') === 0 ? 1 : 0,
+        );
+    }
+    return $liste;
+}
+
+function dk_zaehlung()
+{
+    $alle = dk_container();
+    $lauf = 0;
+    foreach ($alle as $c) { $lauf += $c['laeuft']; }
+    return array('gesamt' => count($alle), 'laeuft' => $lauf,
+                 'gestoppt' => count($alle) - $lauf, 'liste' => $alle);
+}
+
+/* ---------------- Portainer ----------------
+ *
+ * Portainer schreibt FARBIG. Zwischen "setup_token=" und dem Wert steht deshalb
+ * eine ANSI-Escape-Sequenz - ohne deren Entfernen findet kein Suchmuster den
+ * Token. Das Muster wurde gegen die tatsaechliche Ausgabe geprueft, nicht gegen
+ * eine ausgedachte Beispielzeile: die waere farblos gewesen.
+ */
+function dk_portainer_log($zeilen = 400)
+{
+    $cfg = dk_config();
+    $roh = (string) @shell_exec('docker logs --tail ' . (int) $zeilen . ' '
+                                . escapeshellarg($cfg['portainer_name']) . ' 2>&1');
+    return preg_replace('/\x1B\[[0-9;]*[A-Za-z]/', '', $roh);
+}
+
+function dk_setup_token()
+{
+    $roh = dk_portainer_log(400);
+    foreach (array('/setup_token=([A-Za-z0-9._\-]{6,})/i',
+                   '/setup[ _-]?token["\']?\s*[:=]\s*["\']?([A-Za-z0-9._\-]{6,})/i') as $muster) {
+        if (preg_match_all($muster, $roh, $tr)) { return end($tr[1]); }
+    }
+    return '';
+}
+
+function dk_portainer_neustart()
+{
+    $cfg = dk_config();
+    @shell_exec('docker restart ' . escapeshellarg($cfg['portainer_name']) . ' 2>&1');
+    sleep(3);
+    return dk_setup_token();
+}
+
+function dk_portainer_laeuft()
+{
+    $cfg = dk_config();
+    foreach (dk_container() as $c) {
+        if ($c['name'] === $cfg['portainer_name']) { return $c['laeuft'] === 1; }
+    }
+    return false;
+}
+
+/* ---------------- Protokoll ---------------- */
+
+function dk_log_lesen($zeilen = 200)
+{
+    $p = dk_paths();
+    if (@is_file($p['log'])) {
+        $z = @file($p['log']);
+        if (is_array($z)) { return implode('', array_slice($z, -$zeilen)); }
+    }
+    return '';
+}
+
+/* ---------------- Loxone-Vorlage ----------------
+ *
+ * Nachbau der Bausteine aus LoxBerry::LoxoneTemplateBuilder; das Modul gibt es
+ * nur in Perl. Attributreihenfolge, CRLF als Zeilenende und der Tabulator vor
+ * den Kindelementen entsprechen dem Original - Vorlage ist
+ * ap_xml_virtual_in_http() aus dem APC-UPS-Plugin.
+ *
+ * Maskiert wird mit ENT_XML1: ein Anfuehrungszeichen im Containernamen zerlegt
+ * die Datei sonst, und Loxone Config meldet dazu nichts Brauchbares.
+ */
+function dk_x($s)
+{
+    return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1, 'UTF-8');
+}
+
+function dk_xml_virtual_in_http($host, $token)
+{
+    $crlf = "\r\n";
+    $z = dk_zaehlung();
+
+    // Der Rechnername stammt aus HTTP_HOST und ist damit vom Aufrufer
+    // beeinflussbar - er MUSS maskiert werden, sonst zerlegt ein
+    // Anfuehrungszeichen die Datei, und Loxone Config meldet dazu nichts
+    // Brauchbares. Das kaufmaennische Und bleibt danach als &amp; stehen,
+    // weil es in einem XML-Attribut so gehoert.
+    $adresse = dk_x('http://' . $host . '/plugins/' . dk_paths()['plugin']
+                    . '/index.php?token=' . $token . '&aktion=status');
+
+    // Grenzen realistisch: Loxone zieht daraus Reglerbereiche und die
+    // Plausibilitaetspruefung. Alles offen zu lassen verschenkt beides.
+    $felder = array(
+        array('OK',       dk_t('LOX.F_OK'),       0, 1),
+        array('GESAMT',   dk_t('LOX.F_GESAMT'),   0, 999),
+        array('LAEUFT',   dk_t('LOX.F_LAEUFT'),   0, 999),
+        array('GESTOPPT', dk_t('LOX.F_GESTOPPT'), 0, 999),
+    );
+
+    $o  = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualInHttp Title="' . dk_x('Docker NG') . '"'
+        . ' Comment="' . dk_x(dk_t('LOX.XML_KOMMENTAR')) . '"'
+        . ' Address="' . $adresse . '"'
+        . ' PollingTime="60">' . $crlf;
+    foreach ($felder as $f) {
+        list($schluessel, $titel, $min, $max) = $f;
+        $o .= "\t" . '<VirtualInHttpCmd Title="' . dk_x('DOCKERNG_' . $schluessel) . '"'
+            . ' Comment="' . dk_x($titel) . '"'
+            . ' Check="' . dk_x($schluessel . '=\v') . '"'
+            . ' Signed="true" Analog="true"'
+            . ' SourceValLow="0" DestValLow="0"'
+            . ' SourceValHigh="100" DestValHigh="100"'
+            . ' DefVal="0"'
+            . ' MinVal="' . (int) $min . '"'
+            . ' MaxVal="' . (int) $max . '"'
+            . '/>' . $crlf;
+    }
+    // Je erkanntem Container eine eigene Zeile - Titel je Geraet, keine
+    // Platzhalter. Ohne Container bleibt es bei den vier Sammelwerten.
+    foreach ($z['liste'] as $c) {
+        $sicher = preg_replace('/[^A-Za-z0-9_]/', '_', $c['name']);
+        $o .= "\t" . '<VirtualInHttpCmd Title="' . dk_x('DOCKERNG_C_' . $sicher) . '"'
+            . ' Comment="' . dk_x(sprintf(dk_t('LOX.F_CONTAINER'), $c['name'])) . '"'
+            . ' Check="' . dk_x('C_' . $sicher . '=\v') . '"'
+            . ' Signed="true" Analog="false"'
+            . ' SourceValLow="0" DestValLow="0"'
+            . ' SourceValHigh="1" DestValHigh="1"'
+            . ' DefVal="0" MinVal="0" MaxVal="1"'
+            . '/>' . $crlf;
+    }
+    $o .= '</VirtualInHttp>' . $crlf;
+    return $o;
+}

@@ -1,0 +1,42 @@
+Docker NG - LoxBerry-Plugin
+Copyright 2026 Docker NG Plugin Authors
+
+Dieses Werk enthaelt Bestandteile aus:
+
+    loxberry-plugin-docker
+    Copyright Michael Miklis (michaelmiklis.de)
+    https://github.com/michaelmiklis/loxberry-plugin-docker
+    Lizenziert unter der Apache License, Version 2.0
+
+Abschnitt 4 (b) der Apache-Lizenz 2.0 verlangt, dass abgeleitete Werke die
+vorgenommenen Aenderungen deutlich kennzeichnen. Es sind diese:
+
+  * postroot.sh: Portainer wird mit --http-enabled gestartet und Port 9443
+    zusaetzlich freigegeben. Ab Portainer CE 2.19 lauscht sonst nichts auf dem
+    gemappten Port 9000.
+
+  * dpkg/apt: software-properties-common und apt-transport-https entfernt.
+    Ersteres stammt aus der Ubuntu-Welt und laesst apt unter Debian trixie mit
+    Fehler 100 abbrechen; Letzteres ist seit apt 1.5 ein leeres
+    Uebergangspaket.
+
+  * Die Perl-CGI-Oberflaeche (index.cgi mit HTML::Template, templates/index.html,
+    templates/popup.html, forward.html) wurde vollstaendig ersetzt durch eine
+    PHP-Oberflaeche nach dem LoxBerry-Hausstandard mit vier Reitern.
+
+  * Neu hinzugefuegt: Auslesen des Portainer-Setup-Tokens aus dem
+    Containerprotokoll samt Entfernen der ANSI-Farbcodes, ein tokengeschuetzter
+    Endpunkt fuer den Miniserver (webfrontend/html/index.php), eine gemeinsame
+    Bibliothek (webfrontend/html/dk_lib.php), eine Importvorlage fuer
+    Loxone Config sowie vollstaendige Sprachdateien in Deutsch und Englisch.
+
+  * plugin.cfg: eigene Plugin-Kennung (NAME und FOLDER "dockerng",
+    eigene Autorenangabe). Docker NG ist damit ein eigenstaendiges Plugin und
+    kein Update des Originals - beide lassen sich nebeneinander installieren.
+    LB_MINIMUM auf 3.0.0 angehoben, ARCHITECTURE auf false gesetzt.
+
+  * release.cfg: zeigte im Original auf ein voellig anderes Plugin
+    (loxberry-plugin-xiaomi-miflora). Adressen auf dieses Repository gerichtet.
+
+Die Aenderungen wurden dem Originalautor zuerst als Pull Request angeboten:
+https://github.com/michaelmiklis/loxberry-plugin-docker/pull/8
