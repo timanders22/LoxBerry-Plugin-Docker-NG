@@ -50,7 +50,18 @@ if (!in_array($dk_aktion, $dk_erlaubt, true)) {
     exit;
 }
 
-$dk_da = dk_bin() !== '' ? 1 : 0;
+/* OK=1 heisst: Docker ist da UND ansprechbar.
+ *
+ * Bis 1.0.0 stand hier nur 'gibt es das Programm docker'. Fehlten dem
+ * Webserver die Gruppenrechte auf den Docker-Socket - nach einer frischen
+ * Installation der Regelfall -, meldete das Plugin trotzdem OK=1 und dazu
+ * GESAMT=0. Loxone bekam damit die Aussage 'alles in Ordnung, es laeuft
+ * nichts', und die ist falsch: es laeuft womoeglich alles, nur darf niemand
+ * nachsehen. Ein Baustein, der auf GESAMT=0 eine Meldung ausloest, haette
+ * geschwiegen.
+ */
+list($dk_ok, $dk_grund, $dk_grundtext) = dk_zustand();
+$dk_da = $dk_ok ? 1 : 0;
 $dk_z  = dk_zaehlung();
 
 /* ---------------- roh ---------------- */
@@ -58,6 +69,8 @@ if ($dk_aktion === 'roh') {
     header('Content-Type: application/json; charset=utf-8');
     echo json_encode(array(
         'ok'          => $dk_da,
+        'grund'       => $dk_grund,
+        'meldung'     => $dk_grundtext,
         'version'     => dk_version(),
         'gesamt'      => $dk_z['gesamt'],
         'laeuft'      => $dk_z['laeuft'],
@@ -111,9 +124,10 @@ if ($dk_aktion === 'container') {
  * A-Z, 0-9 und Unterstrich gebracht, weil die Befehlserkennung in Loxone
  * sonst nicht darauf passt.
  */
-$dk_zeile = sprintf('DOCKERNG;OK=%d;GESAMT=%d;LAEUFT=%d;GESTOPPT=%d;PORTAINER=%d',
+$dk_zeile = sprintf('DOCKERNG;OK=%d;GESAMT=%d;LAEUFT=%d;GESTOPPT=%d;PORTAINER=%d;GRUND=%s',
                     $dk_da, $dk_z['gesamt'], $dk_z['laeuft'], $dk_z['gestoppt'],
-                    dk_portainer_laeuft() ? 1 : 0);
+                    dk_portainer_laeuft() ? 1 : 0,
+                    $dk_grund !== '' ? $dk_grund : '-');
 foreach ($dk_z['liste'] as $c) {
     $dk_zeile .= ';C_' . preg_replace('/[^A-Za-z0-9_]/', '_', $c['name']) . '=' . $c['laeuft'];
 }

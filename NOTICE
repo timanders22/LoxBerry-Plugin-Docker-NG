@@ -15,6 +15,14 @@ vorgenommenen Aenderungen deutlich kennzeichnen. Es sind diese:
     zusaetzlich freigegeben. Ab Portainer CE 2.19 lauscht sonst nichts auf dem
     gemappten Port 9000.
 
+  * postroot.sh (seit 1.1.0): "usermod -aG docker loxberry" stand im Original
+    INNERHALB des Installationszweiges. War Docker bereits vorhanden, wurde
+    loxberry der Gruppe nie hinzugefuegt - das Plugin meldete dann dauerhaft
+    0 Container. Die Gruppenzuordnung steht jetzt ausserhalb und wird bei jedem
+    Lauf geprueft. Die Anwesenheitspruefung fragt ausserdem "command -v docker"
+    statt die Datei /usr/bin/docker, weil das Installationsskript docker je nach
+    System auch unter /usr/local/bin ablegt.
+
   * dpkg/apt: software-properties-common und apt-transport-https entfernt.
     Ersteres stammt aus der Ubuntu-Welt und laesst apt unter Debian trixie mit
     Fehler 100 abbrechen; Letzteres ist seit apt 1.5 ein leeres

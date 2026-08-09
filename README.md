@@ -7,6 +7,81 @@ Containerzustand an Loxone.
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
 
+## Neu in 1.1.0
+
+### Der Kern: „0 Container" war eine Falschaussage
+
+Nach einer frischen Installation steht `loxberry` zwar in der Gruppe `docker`,
+aber der bereits laufende Webserver hat diese Gruppe noch nicht — Linux zieht
+Gruppen für laufende Prozesse nicht nach. `docker ps` scheitert dann mit
+*permission denied* und Rückgabewert 1. Weil der Befehl mit
+`shell_exec(… 2>/dev/null)` abgesetzt wurde, kam davon **nichts** an: leerer
+String, leere Liste, und an Loxone ging `OK=1;GESAMT=0`. Also: „alles in
+Ordnung, es läuft nichts" — während Portainer daneben lief. Ein Baustein, der
+bei `GESAMT=0` warnen soll, hätte geschwiegen.
+
+Behoben an drei Stellen:
+
+- **Alle Docker-Aufrufe laufen über `dk_ausfuehren()`** mit Rückgabewert und
+  getrennt aufgefangener Fehlerausgabe. Kein `2>/dev/null` mehr.
+- **`dk_zustand()`** unterscheidet *keine Rechte*, *Dienst läuft nicht* und
+  *sonstiger Fehler* — geprüft gegen die echten Meldungstexte von Docker.
+- **Der Endpunkt meldet `OK=0` und `GRUND=KEINE_RECHTE`** statt einer stillen
+  Null. Die Oberfläche zeigt an derselben Stelle Klartext, an der es auffällt.
+
+### Ein Fund, der in keiner Liste stand
+
+`usermod -aG docker loxberry` stand **innerhalb** des Installationszweiges
+`if [ ! -f /usr/bin/docker ]`. War Docker schon vorhanden — weil es jemand von
+Hand installiert hatte oder eine frühere Fassung des Plugins —, wurde
+`loxberry` der Gruppe **nie** hinzugefügt. Nicht „erst nach einem Neustart",
+sondern nie; kein Neustart der Welt hätte daran etwas geändert. Die
+Gruppenzuordnung steht jetzt außerhalb und wird bei jedem Lauf geprüft.
+Nebenbei: die Prüfung auf die Datei `/usr/bin/docker` ist durch `command -v`
+ersetzt — das Installationsskript legt `docker` je nach System auch unter
+`/usr/local/bin` ab, und dann wäre Docker ein zweites Mal installiert worden.
+
+### Warum der Webserver *nicht* neu gestartet wird
+
+Ein `systemctl restart apache2` am Ende von `postroot.sh` wäre naheliegend und
+wäre falsch: das Skript läuft **während** der Installation, und die
+Installationsausgabe wird gerade über genau diesen Webserver angezeigt. Ein
+Neustart mittendrin risse die Seite ab, und der Anwender sähe einen Abbruch
+statt einer fertigen Installation. `REBOOT=true` wiederum erzwingt einen
+kompletten Neustart für etwas, das auch ein Apache-Neustart erledigt.
+
+Stattdessen: `postroot.sh` **prüft nach**, ob `loxberry` den Socket schon
+erreicht, und sagt im Klartext, was zu tun ist. Und die Oberfläche erkennt den
+Zustand selbst — dort, wo er auffällt, mit demselben Hinweis.
+
+### Kleinere Korrekturen
+
+- **`http://` war fest verdrahtet** in der Loxone-Vorlage. Wer seinen LoxBerry
+  ausschließlich über HTTPS erreichbar gemacht hat, bekam eine Adresse, die es
+  nicht gibt — der virtuelle Eingang blieb stumm, ohne dass man der Vorlage
+  etwas ansieht. Jetzt richtet sich das Schema danach, wie die Seite gerade
+  aufgerufen wurde.
+- **`LBWeb::loglist_html()` entfernt.** Die Funktion listet Logdateien des
+  LoxBerry-Log-SDK; dieses Plugin führt sein Protokoll als schlichte Textdatei.
+  Die Liste blieb leer und stand als leeres Bedienelement über dem Text, den es
+  darunter ohnehin gibt.
+- `[ "$container" == "" ]` → `=` (portabel), und der doppelt verneinte Zweig ist
+  zu `[ -n "$container" ]` geworden.
+
+### Nicht zutreffend
+
+Der gemeldete **Copy-Paste-Block aus dem Dashboard-Plugin** existiert nicht:
+`grep` über das gesamte Plugin findet weder `db_lib.php` noch `db_test.php`
+noch die zitierte Fehlermeldung. Die Zeilen 20–23 sind der reguläre Einbund des
+LoxBerry-SDK. Ebenso ist die **Versionierung** tatsächlich stimmig — auch mein
+eigener Anfangsverdacht wegen eines `ng-1.1.0` im Text hat sich nicht bestätigt:
+das stand im erklärenden Kommentar zur Tag-Benennung, nicht in einer Adresse.
+
+Die vorgeschlagene **Verschlankung von `dk_paths()`** auf reine
+LoxBerry-Umgebungsvariablen ist nicht umgesetzt. Sie bringt keine Funktion und
+kostet den Fall, in dem das Plugin aus dem ausgepackten Archiv heraus läuft —
+den brauche ich zum Prüfen.
+
 ## Verhältnis zum Plugin „Docker"
 
 Docker NG ist ein **eigenständiges Plugin**, kein Update des älteren

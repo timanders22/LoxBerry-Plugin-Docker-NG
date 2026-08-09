@@ -91,6 +91,7 @@ if (isset($_POST['tokenzeigen']) || isset($_POST['portainerneu'])) {
 }
 
 $dk_da    = dk_bin();
+list($dk_ok, $dk_grund, $dk_grundtext) = dk_zustand();
 $dk_z     = dk_zaehlung();
 $dk_pl    = dk_portainer_laeuft();
 $dk_host  = preg_replace('/:.*$/', '', (string) ($_SERVER['HTTP_HOST'] ?? 'loxberry'));
@@ -165,6 +166,12 @@ if (class_exists('LBWeb', false)) {
 
 <?php if ($dk_da === '') { ?>
 <div class="sm-warnung"><?= dk_t('MELDUNG.KEIN_DOCKER') ?></div>
+<?php } elseif (!$dk_ok) { ?>
+<?php /* Docker ist da, aber nicht ansprechbar. Genau hier faellt es auf -
+       * die Containerliste bliebe sonst leer, und das saehe aus wie
+       * 'es laeuft eben nichts'. Der Grund steht im Klartext dabei. */ ?>
+<div class="sm-warnung"><b><?= dk_e(dk_t('MELDUNG.T_NICHT_ERREICHBAR')) ?></b><br>
+<?= dk_e($dk_grundtext) ?></div>
 <?php } ?>
 <?php if ($dk_meldung !== '') { ?>
 <div class="sm-hinweis"><?= dk_e($dk_meldung) ?></div>
@@ -174,14 +181,14 @@ if (class_exists('LBWeb', false)) {
 <?php } ?>
 
 <div class="sm-tabs">
-	<a class="sm-tab" data-ziel="tab-settings" href="index.php?form=settings"><?= dk_e(dk_t('REITER.EINSTELLUNGEN')) ?></a>
-	<a class="sm-tab" data-ziel="tab-loxone"   href="index.php?form=loxone"><?= dk_e(dk_t('REITER.LOXONE')) ?></a>
-	<a class="sm-tab" data-ziel="tab-test"     href="index.php?form=test"><?= dk_e(dk_t('REITER.TEST')) ?></a>
-	<a class="sm-tab" data-ziel="tab-log"      href="index.php?form=log"><?= dk_e(dk_t('REITER.LOG')) ?></a>
+	<a class="sm-tab<?= $dk_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings" href="index.php?form=settings"><?= dk_e(dk_t('REITER.EINSTELLUNGEN')) ?></a>
+	<a class="sm-tab<?= $dk_tab === 'tab-loxone' ? ' sm-active' : '' ?>" data-ziel="tab-loxone"   href="index.php?form=loxone"><?= dk_e(dk_t('REITER.LOXONE')) ?></a>
+	<a class="sm-tab<?= $dk_tab === 'tab-test' ? ' sm-active' : '' ?>" data-ziel="tab-test"     href="index.php?form=test"><?= dk_e(dk_t('REITER.TEST')) ?></a>
+	<a class="sm-tab<?= $dk_tab === 'tab-log' ? ' sm-active' : '' ?>" data-ziel="tab-log"      href="index.php?form=log"><?= dk_e(dk_t('REITER.LOG')) ?></a>
 </div>
 
 <!-- ======================= Einstellungen ======================= -->
-<div class="sm-seite" id="tab-settings">
+<div class="sm-seite<?= $dk_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
 
 <h2><?= dk_e(dk_t('EINST.ZUSTAND')) ?></h2>
 <div class="sm-kacheln">
@@ -209,13 +216,13 @@ if (class_exists('LBWeb', false)) {
 <p class="sm-hilfe"><?= dk_t('EINST.SETUPTOKEN_TEXT') ?></p>
 <div class="sm-knopfreihe">
 	<form action="index.php" method="post">
-		<input type="hidden" name="activetab" value="tab-settings">
-		<input type="hidden" name="tokenzeigen" value="1">
+		<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+		<input data-role="none" type="hidden" name="tokenzeigen" value="1">
 		<button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= dk_e(dk_t('EINST.B_SETUPZEIGEN')) ?></button>
 	</form>
 	<form action="index.php" method="post">
-		<input type="hidden" name="activetab" value="tab-settings">
-		<input type="hidden" name="portainerneu" value="1">
+		<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+		<input data-role="none" type="hidden" name="portainerneu" value="1">
 		<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= dk_e(dk_t('EINST.B_NEUSTART')) ?></button>
 	</form>
 </div>
@@ -245,7 +252,7 @@ if (class_exists('LBWeb', false)) {
 
 <h2><?= dk_e(dk_t('EINST.KONFIG')) ?></h2>
 <form action="index.php" method="post">
-<input type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <div class="sm-feld">
 	<label for="portainer_name"><?= dk_e(dk_t('EINST.L_NAME')) ?></label>
 	<input data-role="none" type="text" id="portainer_name" name="portainer_name"
@@ -269,7 +276,7 @@ if (class_exists('LBWeb', false)) {
 </div>
 
 <!-- ======================= Einbindung in Loxone ======================= -->
-<div class="sm-seite" id="tab-loxone">
+<div class="sm-seite<?= $dk_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= dk_e(dk_t('LOX.TITEL')) ?></h2>
 <p class="sm-hilfe"><?= dk_t('LOX.EINLEITUNG') ?></p>
 
@@ -300,8 +307,8 @@ if (class_exists('LBWeb', false)) {
 <?= dk_t('LOX.S3_TEXT') ?>
 <div class="sm-knopfreihe" style="margin-top:10px;">
 	<form action="index.php" method="post">
-		<input type="hidden" name="activetab" value="tab-loxone">
-		<input type="hidden" name="download" value="xml_in">
+		<input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+		<input data-role="none" type="hidden" name="download" value="xml_in">
 		<button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= dk_e(dk_t('LOX.B_XML')) ?></button>
 	</form>
 </div>
@@ -332,7 +339,7 @@ if (class_exists('LBWeb', false)) {
 </div>
 
 <!-- ======================= Test ======================= -->
-<div class="sm-seite" id="tab-test">
+<div class="sm-seite<?= $dk_tab === 'tab-test' ? ' sm-active' : '' ?>" id="tab-test">
 <h2><?= dk_e(dk_t('TEST.TITEL')) ?></h2>
 <p class="sm-hilfe"><?= dk_t('TEST.EINLEITUNG') ?></p>
 
@@ -374,21 +381,28 @@ if (class_exists('LBWeb', false)) {
 <p class="sm-hilfe"><?= dk_t('TEST.H_AKTION') ?></p>
 <div class="sm-knopfreihe">
 	<form action="index.php" method="post">
-		<input type="hidden" name="activetab" value="tab-test">
-		<input type="hidden" name="portainerneu" value="1">
+		<input data-role="none" type="hidden" name="activetab" value="tab-test">
+		<input data-role="none" type="hidden" name="portainerneu" value="1">
 		<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= dk_e(dk_t('EINST.B_NEUSTART')) ?></button>
 	</form>
 </div>
 </div>
 
 <!-- ======================= Logdateien ======================= -->
-<div class="sm-seite" id="tab-log">
+<div class="sm-seite<?= $dk_tab === 'tab-log' ? ' sm-active' : '' ?>" id="tab-log">
 <h2><?= dk_e(dk_t('REITER.LOG')) ?></h2>
 <?php
+/* Kein LBWeb::loglist_html() hier.
+ *
+ * Die Funktion baut eine Auswahlliste ueber die Logdateien, die ueber das
+ * Log-SDK von LoxBerry angelegt wurden. Dieses Plugin fuehrt sein Protokoll
+ * aber als schlichte Textdatei (siehe dk_paths) - der Log-Manager kennt sie
+ * gar nicht. Die Liste blieb deshalb leer und stand als leeres Bedienelement
+ * ueber dem Protokolltext, den es darunter ohnehin gibt. Ein Bedienelement,
+ * das nie etwas anbietet, laesst den Anwender suchen, was er falsch gemacht
+ * hat.
+ */
 $dk_logtext = dk_log_lesen(200);
-if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {
-    echo LBWeb::loglist_html();
-}
 if (trim($dk_logtext) !== '') { ?>
 <pre class="sm-pre"><?= dk_e($dk_logtext) ?></pre>
 <?php } else { ?>

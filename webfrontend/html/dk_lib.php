@@ -158,14 +158,102 @@ function dk_e($wert)
     return htmlspecialchars((string) $wert, ENT_QUOTES, 'UTF-8');
 }
 
-/* ---------------- Docker ---------------- */
+/* ==================================================================
+ * Docker
+ *
+ * Ein Befehl wird hier NIE mit shell_exec und 2>/dev/null abgesetzt.
+ *
+ * Der Grund ist der wichtigste Fehler, den dieses Plugin haben kann: nach
+ * der Installation steht loxberry zwar in der Gruppe docker, aber der
+ * bereits laufende Webserver hat diese Gruppe noch nicht - Linux zieht
+ * Gruppen fuer laufende Prozesse nicht nach. 'docker ps' scheitert dann mit
+ *
+ *     permission denied while trying to connect to the Docker daemon socket
+ *
+ * und Rueckgabewert 1. Mit 2>/dev/null kam davon nichts an: shell_exec gab
+ * einen leeren String zurueck, die Liste war leer, und das Plugin meldete an
+ * Loxone in aller Ruhe '0 Container' - waehrend Portainer daneben lief.
+ *
+ * Eine falsche Null ist schlimmer als eine Fehlermeldung. Deshalb laeuft
+ * alles ueber dk_ausfuehren(): Rueckgabewert und Fehlerausgabe werden
+ * mitgenommen und ausgewertet.
+ * ================================================================== */
+
+/**
+ * Einen Befehl ausfuehren und ALLES mitnehmen.
+ * Rueckgabe: array(ausgabe, fehlertext, rueckgabewert)
+ */
+function dk_ausfuehren($befehl)
+{
+    $aus = array();
+    $code = 0;
+    // Die Fehlerausgabe kommt in eine eigene Datei, damit sie sich von der
+    // Nutzausgabe trennen laesst - '2>&1' vermischte beides, und dann steht
+    // eine Fehlermeldung mitten in der Containerliste.
+    $fehlerdatei = tempnam(sys_get_temp_dir(), 'dkng');
+    if ($fehlerdatei === false) {
+        @exec($befehl . ' 2>/dev/null', $aus, $code);
+        return array(implode("\n", $aus), '', (int) $code);
+    }
+    @exec($befehl . ' 2>' . escapeshellarg($fehlerdatei), $aus, $code);
+    $fehler = trim((string) @file_get_contents($fehlerdatei));
+    @unlink($fehlerdatei);
+    return array(implode("\n", $aus), $fehler, (int) $code);
+}
+
+/**
+ * Warum klappt der Zugriff auf Docker nicht?
+ *
+ * Rueckgabe: array(ok, grund, meldung). 'grund' ist ein kurzes Merkwort fuer
+ * den Miniserver, 'meldung' der Klartext fuer die Oberflaeche.
+ */
+function dk_zustand()
+{
+    static $z = null;
+    if ($z !== null) {
+        return $z;
+    }
+    if (dk_bin() === '') {
+        $z = array(0, 'KEIN_DOCKER',
+                   'Das Programm docker ist nicht vorhanden.');
+        return $z;
+    }
+    list($aus, $fehler, $code) = dk_ausfuehren('docker ps --format "{{.Names}}"');
+    if ($code === 0) {
+        $z = array(1, '', '');
+        return $z;
+    }
+    $t = strtolower($fehler);
+    if (strpos($t, 'permission denied') !== false || strpos($t, 'connect: permission') !== false) {
+        $z = array(0, 'KEINE_RECHTE',
+            'Der Webserver darf nicht auf den Docker-Socket zugreifen. Das ist nach '
+            . 'einer frischen Installation der Regelfall und KEIN Defekt: der Benutzer '
+            . 'loxberry wurde der Gruppe docker hinzugefuegt, aber Linux zieht neue '
+            . 'Gruppen fuer bereits laufende Prozesse nicht nach - der Webserver laeuft '
+            . 'noch mit den alten. Abhilfe: den LoxBerry einmal neu starten. Wer nicht '
+            . 'neu starten will, kann auch nur den Webserver durchstarten: '
+            . 'sudo systemctl restart apache2 - dabei bricht diese Seite kurz ab.');
+        return $z;
+    }
+    if (strpos($t, 'cannot connect to the docker daemon') !== false
+        || strpos($t, 'is the docker daemon running') !== false) {
+        $z = array(0, 'DIENST_AUS',
+            'Der Docker-Dienst laeuft nicht. Pruefen mit: systemctl status docker, '
+            . 'starten mit: sudo systemctl enable --now docker');
+        return $z;
+    }
+    $z = array(0, 'FEHLER', $fehler !== '' ? $fehler
+               : ('docker endete mit Rueckgabewert ' . $code . ' ohne Meldung.'));
+    return $z;
+}
 
 /** Pfad zum docker-Programm, oder Leerstring. */
 function dk_bin()
 {
     static $pfad = null;
     if ($pfad === null) {
-        $pfad = trim((string) @shell_exec('command -v docker 2>/dev/null'));
+        list($aus, $fehler, $code) = dk_ausfuehren('command -v docker');
+        $pfad = ($code === 0) ? trim($aus) : '';
     }
     return $pfad;
 }
@@ -173,7 +261,8 @@ function dk_bin()
 function dk_version()
 {
     if (dk_bin() === '') { return ''; }
-    return trim((string) @shell_exec('docker --version 2>&1'));
+    list($aus, $fehler, $code) = dk_ausfuehren('docker --version');
+    return trim($code === 0 ? $aus : $fehler);
 }
 
 /**
@@ -185,7 +274,17 @@ function dk_version()
 function dk_container()
 {
     if (dk_bin() === '') { return array(); }
-    $roh = (string) @shell_exec("docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}' 2>/dev/null");
+    list($ok) = dk_zustand();
+    if (!$ok) {
+        // Nicht so tun, als gaebe es keine Container. Wer hier eine leere
+        // Liste bekommt, soll sie an dk_zustand() halten.
+        return array();
+    }
+    list($roh, $fehler, $code) = dk_ausfuehren(
+        "docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}'");
+    if ($code !== 0) {
+        return array();
+    }
     $liste = array();
     foreach (explode("\n", trim($roh)) as $zeile) {
         if (trim($zeile) === '') { continue; }
@@ -220,8 +319,12 @@ function dk_zaehlung()
 function dk_portainer_log($zeilen = 400)
 {
     $cfg = dk_config();
-    $roh = (string) @shell_exec('docker logs --tail ' . (int) $zeilen . ' '
-                                . escapeshellarg($cfg['portainer_name']) . ' 2>&1');
+    // Hier ist 2>&1 richtig: Portainer schreibt seine Startmeldungen samt
+    // Einrichtungsmerkwort auf die Fehlerausgabe, und genau die wird
+    // gebraucht.
+    list($aus, $fehler, $code) = dk_ausfuehren('docker logs --tail ' . (int) $zeilen . ' '
+                                . escapeshellarg($cfg['portainer_name']));
+    $roh = $aus . "\n" . $fehler;
     return preg_replace('/\x1B\[[0-9;]*[A-Za-z]/', '', $roh);
 }
 
@@ -238,7 +341,7 @@ function dk_setup_token()
 function dk_portainer_neustart()
 {
     $cfg = dk_config();
-    @shell_exec('docker restart ' . escapeshellarg($cfg['portainer_name']) . ' 2>&1');
+    dk_ausfuehren('docker restart ' . escapeshellarg($cfg['portainer_name']));
     sleep(3);
     return dk_setup_token();
 }
@@ -289,7 +392,17 @@ function dk_xml_virtual_in_http($host, $token)
     // Anfuehrungszeichen die Datei, und Loxone Config meldet dazu nichts
     // Brauchbares. Das kaufmaennische Und bleibt danach als &amp; stehen,
     // weil es in einem XML-Attribut so gehoert.
-    $adresse = dk_x('http://' . $host . '/plugins/' . dk_paths()['plugin']
+    // http oder https - danach, wie DIESE Seite gerade aufgerufen wurde.
+    //
+    // Der Miniserver spricht den LoxBerry im eigenen Netz an und nimmt
+    // dafuer fast immer http. Wer seinen LoxBerry aber ausschliesslich ueber
+    // https erreichbar gemacht hat, bekam bis 1.0.0 eine Vorlage mit einer
+    // Adresse, die es nicht gibt - und der virtuelle Eingang blieb stumm,
+    // ohne dass man der Vorlage etwas ansieht.
+    $schema = (!empty($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off')
+              || (int) ($_SERVER['SERVER_PORT'] ?? 0) === 443
+        ? 'https' : 'http';
+    $adresse = dk_x($schema . '://' . $host . '/plugins/' . dk_paths()['plugin']
                     . '/index.php?token=' . $token . '&aktion=status');
 
     // Grenzen realistisch: Loxone zieht daraus Reglerbereiche und die

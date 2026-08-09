@@ -60,24 +60,92 @@ echo "<INFO> Plugin Data folder is: $PDATA"
 echo "<INFO> Plugin Log folder (on RAMDISK!) is: $PLOG"
 echo "<INFO> Plugin CONFIG folder is: $PCONFIG"
 
-# check if docker is already installed, otherwise install
-if  [ ! -f "/usr/bin/docker" ]
+# ---------------------------------------------------------------------------
+# Docker einrichten
+#
+# Zwei Dinge waren hier bis 1.0.0 falsch, und das zweite ist das schwerere.
+#
+# 1. Geprueft wurde auf die DATEI /usr/bin/docker. Das Installationsskript von
+#    get.docker.com legt docker je nach System auch unter /usr/local/bin ab,
+#    und wer es ueber ein anderes Paket hat, hat es womoeglich woanders. Dann
+#    waere Docker ein zweites Mal installiert worden. 'command -v' fragt den
+#    Suchpfad und ist die richtige Frage.
+#
+# 2. usermod stand INNERHALB des Installationszweiges. War Docker schon da -
+#    weil es jemand vorher von Hand installiert hat oder eine fruehere Fassung
+#    des Plugins -, wurde loxberry der Gruppe docker NIE hinzugefuegt. Nicht
+#    'erst nach einem Neustart', sondern nie. Das Plugin meldete dann dauerhaft
+#    0 Container, und kein Neustart der Welt haette daran etwas geaendert.
+#    Die Gruppenzuordnung gehoert deshalb heraus aus dem Zweig.
+# ---------------------------------------------------------------------------
+
+if ! command -v docker >/dev/null 2>&1
 then
-	# install docker
+	echo "<INFO> Docker ist nicht vorhanden - es wird eingerichtet."
 	curl -fsSL https://get.docker.com -o get-docker.sh
 	sh get-docker.sh
-	usermod -aG docker loxberry
+	rm -f get-docker.sh
+else
+	echo "<OK> Docker ist bereits vorhanden: $(docker --version 2>&1 | head -1)"
+fi
+
+# Gruppenzuordnung IMMER pruefen, nicht nur bei einer Neuinstallation.
+if getent group docker >/dev/null 2>&1
+then
+	if id -nG loxberry 2>/dev/null | tr ' ' '\n' | grep -qx docker
+	then
+		echo "<OK> Benutzer loxberry ist in der Gruppe docker."
+	elif usermod -aG docker loxberry
+	then
+		echo "<OK> Benutzer loxberry der Gruppe docker hinzugefuegt."
+	else
+		echo "<FAIL> Benutzer loxberry liess sich der Gruppe docker nicht hinzufuegen."
+		echo "<FAIL> Von Hand nachholen: sudo usermod -aG docker loxberry"
+	fi
+else
+	echo "<FAIL> Die Gruppe docker gibt es nicht - ist Docker wirklich eingerichtet?"
+fi
+
+# ---------------------------------------------------------------------------
+# Und der Punkt, an dem die meisten haengen bleiben
+#
+# Eine neue Gruppe wirkt erst in einer NEUEN Sitzung. Der Webserver laeuft
+# bereits, und Linux zieht Gruppen fuer laufende Prozesse nicht nach - PHP
+# darf also weiterhin nicht an /var/run/docker.sock, obwohl loxberry jetzt in
+# der Gruppe steht.
+#
+# Der Webserver wird hier BEWUSST NICHT neu gestartet: dieses Skript laeuft
+# waehrend der Installation, und die Installationsausgabe wird gerade ueber
+# genau diesen Webserver angezeigt. Ein Neustart mittendrin risse die Seite
+# ab, und der Anwender saehe einen Abbruch statt einer fertigen Installation.
+#
+# Stattdessen wird es benannt - und die Oberflaeche erkennt den Zustand
+# selbst und sagt dasselbe noch einmal an der Stelle, an der er auffaellt.
+if [ -S /var/run/docker.sock ]
+then
+	if su loxberry -s /bin/sh -c "docker ps >/dev/null 2>&1"
+	then
+		echo "<OK> Der Benutzer loxberry erreicht den Docker-Socket bereits."
+	else
+		echo "<INFO> ACHTUNG: der Webserver kann den Docker-Socket noch NICHT lesen."
+		echo "<INFO> Das ist nach einer frischen Installation normal - eine neue Gruppe"
+		echo "<INFO> wirkt erst in einer neuen Sitzung, und der Webserver laeuft schon."
+		echo "<INFO> Bis dahin meldet das Plugin 0 Container."
+		echo "<INFO> Abhilfe: den LoxBerry einmal neu starten."
+		echo "<INFO> Wer nicht neu starten will, genuegt auch:"
+		echo "<INFO>   sudo systemctl restart apache2"
+	fi
 fi
 
 
 # check if container ist in the corret version
 container=$(docker ps --filter ancestor=portainer/portainer-ce:latest --filter name=portainer -q)
-if [ "$container" == "" ]
+if [ "$container" = "" ]
 then
 
 	# check if container with name portainer exists
 	container=$(docker ps -a --filter name=portainer -q)
-	if ! [ "$container" == "" ]
+	if [ -n "$container" ]
 	then
 		# remove stopped portainer container
 		docker rm --force portainer
