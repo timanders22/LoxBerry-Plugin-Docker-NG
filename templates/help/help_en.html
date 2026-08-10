@@ -1,0 +1,73 @@
+<h3>Docker NG</h3>
+
+<p>Docker runs additional programs in self-contained containers on the LoxBerry.
+<b>Portainer</b> is the web interface for it.</p>
+
+<h3>Relation to the &bdquo;Docker&ldquo; plugin</h3>
+
+<p>Docker NG is a <b>separate plugin</b>, not an update of the older Docker
+plugin by M. Miklis. It uses its own folder
+(<span class="sm-mono">dockerng</span>) and its own identifier &mdash; both can be
+installed side by side, and anyone who prefers the original keeps it untouched.
+The original author has stated that he no longer runs either Docker or a
+LoxBerry.</p>
+
+<h3>The three pitfalls with Portainer</h3>
+
+<ol>
+<li><b>Port 9000 stayed silent.</b> From Portainer CE 2.19 onwards nothing
+listens on port 9000 without <span class="sm-mono">--http-enabled</span>. The
+container runs, the browser only says &bdquo;connection refused&ldquo; &mdash;
+which looks like a failed installation. The install script sets the flag and
+additionally exposes port 9443.</li>
+
+<li><b>The setup token only appears in the log.</b> From 2.43 (respectively
+2.39.4) the first-run setup requires a token that is displayed nowhere and
+expires after five minutes. Two buttons on the <i>Settings</i> tab fetch it, or
+restart the container and fetch a fresh one.</li>
+
+<li><b>Portainer cannot be embedded.</b> Its interface sends
+<span class="sm-mono">X-Frame-Options</span> and refuses to be shown inside a
+frame. That is why the button opens a separate window.</li>
+</ol>
+
+<h3>The endpoint for Loxone</h3>
+
+<p>It sits in the unauthenticated area so that Loxone can reach it without
+credentials, and it is protected by a token. The comparison uses
+<span class="sm-mono">hash_equals</span>, that is, in constant time.</p>
+
+<p><b>The endpoint is read-only.</b> It starts and stops nothing. An endpoint in
+the unauthenticated area that could stop containers would be an attack surface
+without any benefit &mdash; switching happens in Portainer.</p>
+
+<h3>Why there is no MQTT tab</h3>
+
+<p>Docker NG runs no service that could publish on a cycle. Loxone fetches the
+state over the HTTP endpoint. An MQTT path could be added, but it is not built
+&mdash; and therefore not claimed either.</p>
+
+<h3>What is not verified</h3>
+
+<p>Version 1.0.0 was written on a LoxBerry with Debian trixie and PHP 8.
+Behaviour on older LoxBerry releases has not been tested &mdash; hence
+<span class="sm-mono">LB_MINIMUM=3.0.0</span>.</p>
+
+<h3>What 1.2.0 fixes</h3>
+
+<p>Five findings reported by a reader, all confirmed against the source:</p>
+<ul>
+<li>The interface did not start when installed (HTTP 500). The path to
+<span class="sm-mono">dk_lib.php</span> only covered the unpacked archive, where
+<span class="sm-mono">htmlauth/</span> and <span class="sm-mono">html/</span> sit
+next to each other. Once installed each lives under its own
+<span class="sm-mono">plugins/</span> level.</li>
+<li>The configuration &mdash; and with it the token &mdash; did not survive a
+reinstall. There is now a backup <i>next to</i> the config folder, so it outlives
+the folder being deleted.</li>
+<li>The log tab stayed empty because nothing ever wrote the file. Note that
+<span class="sm-mono">log/</span> is a ramdisk on the LoxBerry: the file does not
+survive a reboot.</li>
+<li>Sixteen texts were escaped twice and showed HTML entities verbatim.</li>
+<li>This help is now available in English, and there is an uninstall script.</li>
+</ul>

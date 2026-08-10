@@ -14,7 +14,43 @@
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
-require_once __DIR__ . '/../html/dk_lib.php';
+
+/* Die Bibliothek liegt unter webfrontend/html/, weil der Loxone-Endpunkt sie
+ * ebenfalls braucht. Der Pfad dorthin ist NICHT in beiden Zustaenden derselbe:
+ *
+ *   im entpackten Archiv   …/webfrontend/htmlauth/   und  …/webfrontend/html/
+ *                          liegen nebeneinander      ->  __DIR__/../html/
+ *
+ *   installiert            <home>/webfrontend/htmlauth/plugins/<ordner>/  und
+ *                          <home>/webfrontend/html/plugins/<ordner>/
+ *                          jeweils unter EINER EIGENEN plugins-Ebene
+ *                          ->  __DIR__/../html/ zeigt auf
+ *                              htmlauth/plugins/html/, das es nicht gibt
+ *
+ * Bis 1.1.0 stand hier nur der Archivfall. Installiert endete die Oberflaeche
+ * damit in einem Fatal Error und der Browser bekam HTTP 500 - gemeldet von
+ * einem Mitleser, am Quelltext nachgeprueft, zutreffend.
+ *
+ * Deshalb eine Kandidatenliste statt eines festen Pfades: sie traegt in beiden
+ * Zustaenden und ueberlebt auch eine Umbenennung des Pluginordners.
+ */
+$dk_gefunden = false;
+foreach (array(
+    dirname(dirname(__DIR__)) . '/html/plugins/' . basename(__DIR__) . '/dk_lib.php',
+    dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . basename(__DIR__) . '/dk_lib.php',
+    dirname(__DIR__) . '/html/dk_lib.php',
+) as $dk_kandidat) {
+    if (is_file($dk_kandidat)) {
+        require_once $dk_kandidat;
+        $dk_gefunden = true;
+        break;
+    }
+}
+if (!$dk_gefunden) {
+    echo '<p><b>Fehler:</b> dk_lib.php wurde nicht gefunden. '
+       . 'Bitte das Plugin neu installieren.</p>';
+    exit;
+}
 
 $dk_p = dk_paths();
 if (file_exists($dk_p['home'] . '/libs/phplib/loxberry_system.php')) {
@@ -63,17 +99,34 @@ if (($_POST['speichern'] ?? '') === '1') {
         $dk_neu['portainer_name'] = $dk_name;
     }
 
-    if (isset($_POST['token_neu'])) { $dk_neu['aktionstoken'] = dk_token_neu(); }
+    $dk_tokengewuerfelt = false;
+    if (isset($_POST['token_neu'])) {
+        $dk_neu['aktionstoken'] = dk_token_neu();
+        $dk_tokengewuerfelt = true;
+    }
 
     if (!$dk_fehler) {
         if (dk_config_schreiben($dk_neu)) {
             $dk_cfg = $dk_neu;
             $dk_token = (string) $dk_neu['aktionstoken'];
             $dk_meldung = dk_t('MELDUNG.GESPEICHERT');
+            if ($dk_tokengewuerfelt) {
+                // Der Wert selbst gehoert NICHT ins Protokoll - nur die
+                // Tatsache. Ein Merkwort im Log waere ein Merkwort auf Platte.
+                dk_log('Neues Merkwort fuer den Endpunkt gewuerfelt. Alle Adressen '
+                    . 'im Miniserver muessen jetzt nachgezogen werden.');
+            }
         } else {
             $dk_fehler[] = dk_t('FEHLER.SCHREIBEN');
         }
     }
+}
+
+/* ---------------- Logdatei leeren ---------------- */
+if (isset($_POST['log_leeren'])) {
+    dk_log_leeren();
+    $dk_meldung = dk_t('LOG.GELEERT');
+    $dk_tab = 'tab-log';
 }
 
 /* ---------------- Portainer: Setup-Token ---------------- */
@@ -98,7 +151,28 @@ $dk_host  = preg_replace('/:.*$/', '', (string) ($_SERVER['HTTP_HOST'] ?? 'loxbe
 $dk_basis = '/plugins/' . $dk_p['plugin'] . '/index.php?token=' . rawurlencode($dk_token);
 
 if (class_exists('LBWeb', false)) {
-    LBWeb::lbheader('Docker NG', 'https://wiki.loxberry.de/', 'help.html');
+    /* Hilfe in der eingestellten Sprache.
+     *
+     * Bis 1.1.0 stand hier fest 'help.html', und diese Datei war fest deutsch -
+     * obwohl es language_de.ini und language_en.ini laengst gab. Gemeldet von
+     * einem Mitleser, zutreffend.
+     *
+     * 'help.html' behaelt seinen Namen als Rueckfallebene: welchen Pfad
+     * lbheader() fuer den dritten Parameter genau absucht, ist in dieser
+     * Sitzung nicht am LoxBerry-Quelltext nachgeprueft worden. Deshalb wird
+     * der abweichende Name nur uebergeben, wenn die Datei am erwarteten Ort
+     * auch wirklich liegt - sonst bleibt alles beim Bisherigen.
+     */
+    $dk_hilfe = 'help.html';
+    if (dk_sprache() === 'en') {
+        foreach (array(
+            $dk_p['home'] . '/templates/plugins/' . $dk_p['plugin'] . '/help/help_en.html',
+            dirname(dirname(__DIR__)) . '/templates/help/help_en.html',
+        ) as $dk_kand) {
+            if (is_file($dk_kand)) { $dk_hilfe = 'help_en.html'; break; }
+        }
+    }
+    LBWeb::lbheader('Docker NG', 'https://wiki.loxberry.de/', $dk_hilfe);
 }
 ?>
 <style>
@@ -403,11 +477,24 @@ if (class_exists('LBWeb', false)) {
  * hat.
  */
 $dk_logtext = dk_log_lesen(200);
-if (trim($dk_logtext) !== '') { ?>
+?>
+<div class="sm-warnung"><?= dk_t('LOG.RAMDISK') ?></div>
+<p class="sm-hilfe"><?= dk_t('LOG.ORT') ?><br>
+<span class="sm-mono"><?= dk_e($dk_p['log']) ?></span></p>
+<?php if (trim($dk_logtext) !== '') { ?>
 <pre class="sm-pre"><?= dk_e($dk_logtext) ?></pre>
 <?php } else { ?>
 <div class="sm-hinweis"><?= dk_t('MELDUNG.KEIN_LOG') ?></div>
 <?php } ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?= dk_t('LEGENDE.AKTION_LOG') ?></span>
+</div>
+<div class="sm-knopfreihe">
+	<form action="index.php" method="post">
+		<input data-role="none" type="hidden" name="activetab" value="tab-log">
+		<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="log_leeren" value="1"><?= dk_e(dk_t('LOG.B_LEEREN')) ?></button>
+	</form>
+</div>
 </div>
 
 </div>

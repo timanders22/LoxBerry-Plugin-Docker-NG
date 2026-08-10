@@ -27,12 +27,24 @@ function dk_paths()
     if ($p !== null) { return $p; }
 
     $home = getenv('LBHOMEDIR');
-    if (!$home || !is_dir($home)) { $home = '/opt/loxberry'; }
+    if (!$home || !is_dir($home)) {
+        foreach (array('/opt/loxberry', '/home/loxberry/loxberry') as $k) {
+            if (is_dir($k)) { $home = $k; break; }
+        }
+        if (!$home) { $home = '/opt/loxberry'; }
+    }
 
-    // .../webfrontend/html/dk_lib.php  ->  Pluginordner
-    $ordner = 'dockerng';
-    foreach (array(getenv('LBPPLUGINDIR'), 'dockerng') as $kand) {
-        if ($kand !== false && $kand !== null && $kand !== '') { $ordner = $kand; break; }
+    /* Der Ordnername ergibt sich aus dem ABLAGEORT dieser Datei:
+     *   <home>/webfrontend/html/plugins/<ordner>/dk_lib.php
+     * Bis 1.1.0 stand hier fest 'dockerng' - der Kommentar darueber behauptete
+     * schon damals die Ableitung, der Code machte sie nicht. Bei einem Fork
+     * mit anderem Ordnernamen zeigten dann alle Pfade ins Leere.
+     */
+    $ordner = basename(dirname(__FILE__));
+    if (!is_dir($home . '/config/plugins/' . $ordner)) {
+        foreach (array(getenv('LBPPLUGINDIR'), 'dockerng') as $kand) {
+            if ($kand && is_dir($home . '/config/plugins/' . $kand)) { $ordner = $kand; break; }
+        }
     }
 
     $p = array(
@@ -40,6 +52,7 @@ function dk_paths()
         'plugin'    => $ordner,
         'config'    => $home . '/config/plugins/' . $ordner . '/dockerng.json',
         'configdir' => $home . '/config/plugins/' . $ordner,
+        'sicherung' => $home . '/config/plugins/' . $ordner . '.backup.json',
         'logdir'    => $home . '/log/plugins/' . $ordner,
         'log'       => $home . '/log/plugins/' . $ordner . '/dockerng.log',
     );
@@ -71,6 +84,30 @@ function dk_config()
     static $cfg = null;
     if ($cfg !== null) { return $cfg; }
     $p = dk_paths();
+
+    /* Selbstheilung. Der Konfigurationsordner eines Plugins ist beim
+     * Neuinstallieren weg, bevor irgendein Skript des Plugins laeuft - und mit
+     * ihm das Merkwort, das in den Adressen im Miniserver steckt. Der
+     * virtuelle Eingang bekommt danach nur noch 403, ohne erkennbaren Anlass.
+     *
+     * Die Sicherung liegt deshalb NEBEN dem Ordner, nicht darin:
+     *     config/plugins/<ordner>.backup.json   statt
+     *     config/plugins/<ordner>/…
+     * Ein Geschwister des Ordners uebersteht dessen Loeschung.
+     *
+     * Gemeldet von einem Mitleser, zutreffend, in 1.2.0 behoben.
+     */
+    $roh = @is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
+    if (($roh === '' || $roh === '{}') && @is_file($p['sicherung'])) {
+        @mkdir($p['configdir'], 0755, true);
+        if (@copy($p['sicherung'], $p['config'])) {
+            @chmod($p['config'], 0600);
+            dk_log('Konfiguration war leer oder fehlte - aus der Sicherung '
+                . $p['sicherung'] . ' wiederhergestellt. Das Merkwort fuer den '
+                . 'Endpunkt bleibt damit gueltig.');
+        }
+    }
+
     $cfg = array_merge(dk_vorgaben(), dk_json_lesen($p['config']));
 
     // Grenzen durchsetzen, statt Werte ungeprueft weiterzureichen.
@@ -87,8 +124,18 @@ function dk_config_schreiben($cfg)
     if (!@is_dir($p['configdir'])) { @mkdir($p['configdir'], 0755, true); }
     $ok = @file_put_contents($p['config'],
         json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
-    if ($ok !== false) { @chmod($p['config'], 0600); }
-    return $ok !== false;
+    if ($ok === false) {
+        dk_log('Die Konfiguration liess sich NICHT schreiben: ' . $p['config']);
+        return false;
+    }
+    @chmod($p['config'], 0600);
+    // Sicherung mitziehen. Sie enthaelt das Merkwort, deshalb ebenfalls 0600.
+    if (@copy($p['config'], $p['sicherung'])) {
+        @chmod($p['sicherung'], 0600);
+    }
+    dk_log('Konfiguration gespeichert (Port ' . (int) $cfg['portainer_port']
+        . ', Container ' . $cfg['portainer_name'] . ').');
+    return true;
 }
 
 /* ---------------- Merkwort fuer den Endpunkt ----------------
@@ -244,6 +291,11 @@ function dk_zustand()
     }
     $z = array(0, 'FEHLER', $fehler !== '' ? $fehler
                : ('docker endete mit Rueckgabewert ' . $code . ' ohne Meldung.'));
+    // Gebremst, weil diese Stelle bei jedem Seitenaufruf und jedem
+    // Endpunktabruf durchlaufen wird - ungebremst waere die Logdatei nach
+    // einer Stunde Dauerstoerung unlesbar.
+    dk_log_gebremst('zustand_' . strtolower($z[1]),
+        'Docker antwortet nicht (' . $z[1] . '): ' . $z[2]);
     return $z;
 }
 
@@ -341,7 +393,14 @@ function dk_setup_token()
 function dk_portainer_neustart()
 {
     $cfg = dk_config();
-    dk_ausfuehren('docker restart ' . escapeshellarg($cfg['portainer_name']));
+    list($aus, $fehler, $code) = dk_ausfuehren(
+        'docker restart ' . escapeshellarg($cfg['portainer_name']));
+    if ($code === 0) {
+        dk_log('Container ' . $cfg['portainer_name'] . ' neu gestartet.');
+    } else {
+        dk_log('Container ' . $cfg['portainer_name'] . ' liess sich nicht neu starten '
+            . '(Rueckgabewert ' . $code . '): ' . ($fehler !== '' ? $fehler : 'ohne Meldung'));
+    }
     sleep(3);
     return dk_setup_token();
 }
@@ -355,7 +414,42 @@ function dk_portainer_laeuft()
     return false;
 }
 
-/* ---------------- Protokoll ---------------- */
+/* ---------------- Protokoll ----------------
+ *
+ * Bis 1.1.0 gab es nur dk_log_lesen(). Geschrieben hat die Datei NIEMAND - der
+ * Reiter Logdateien blieb deshalb dauerhaft leer, und zwar ohne dass irgendwo
+ * ein Fehler sichtbar wurde. Gemeldet von einem Mitleser, am Quelltext
+ * nachgeprueft und zutreffend.
+ *
+ * ACHTUNG, und das gehoert auch in den Reiter: <home>/log/ liegt auf dem
+ * LoxBerry auf einer RAMDISK. Diese Datei ueberlebt keinen Neustart. Sie ist
+ * eine Spur fuer die Fehlersuche im laufenden Betrieb, kein Archiv.
+ */
+function dk_log($text)
+{
+    $p = dk_paths();
+    if (!@is_dir($p['logdir'])) { @mkdir($p['logdir'], 0775, true); }
+    // Rotation, damit eine Dauerstoerung die Ramdisk nicht vollschreibt.
+    if (@is_file($p['log']) && @filesize($p['log']) > 262144) {
+        $rest = array_slice(@file($p['log'], FILE_IGNORE_NEW_LINES) ?: array(), -300);
+        @file_put_contents($p['log'], implode("\n", $rest) . "\n");
+    }
+    return @file_put_contents($p['log'],
+        '[' . date('Y-m-d H:i:s') . '] ' . $text . "\n", FILE_APPEND) !== false;
+}
+
+/** Dieselbe Meldung hoechstens einmal je Zeitfenster. */
+function dk_log_gebremst($schluessel, $text, $sekunden = 3600)
+{
+    $p = dk_paths();
+    $f = $p['logdir'] . '/.meld_' . preg_replace('/[^a-z0-9_]/i', '', $schluessel);
+    $letzte = @is_file($f) ? (int) @file_get_contents($f) : 0;
+    if (time() - $letzte >= $sekunden) {
+        if (!@is_dir($p['logdir'])) { @mkdir($p['logdir'], 0775, true); }
+        @file_put_contents($f, (string) time());
+        dk_log($text);
+    }
+}
 
 function dk_log_lesen($zeilen = 200)
 {
@@ -365,6 +459,14 @@ function dk_log_lesen($zeilen = 200)
         if (is_array($z)) { return implode('', array_slice($z, -$zeilen)); }
     }
     return '';
+}
+
+function dk_log_leeren()
+{
+    $p = dk_paths();
+    if (!@is_dir($p['logdir'])) { @mkdir($p['logdir'], 0775, true); }
+    return @file_put_contents($p['log'],
+        '[' . date('Y-m-d H:i:s') . '] ' . dk_t('LOG.GELEERT') . "\n") !== false;
 }
 
 /* ---------------- Loxone-Vorlage ----------------

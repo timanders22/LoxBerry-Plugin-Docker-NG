@@ -1,0 +1,62 @@
+#!/bin/bash
+# Docker NG - Deinstallation
+#
+# Bis 1.1.0 gab es dieses Skript nicht: Portainer lief nach dem Entfernen des
+# Plugins weiter, und die Sicherung mit dem Merkwort blieb auf der Karte
+# liegen. Gemeldet von einem Mitleser, zutreffend.
+#
+# Was hier absichtlich NICHT passiert: Docker wird nicht entfernt. Auf einem
+# LoxBerry haengen daran regelmaessig weitere Container - Sprachdienste,
+# Datenbanken, anderes. Ein Plugin, das beim Deinstallieren fremde Container
+# mitreisst, ist gefaehrlicher als eines, das etwas stehen laesst. Der Befehl
+# dafuer steht unten, auszufuehren bleibt Sache des Anwenders.
+
+PFOLDER="${3:-dockerng}"
+BASE="${5:-$LBHOMEDIR}"
+if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+    SELF=$(cd "$(dirname "$0")" && pwd)
+    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+fi
+
+CF="$BASE/config/plugins/$PFOLDER/dockerng.json"
+BK="$BASE/config/plugins/$PFOLDER.backup.json"
+
+# ---------- Portainer anhalten und entfernen ----------
+# Der Containername steht in der Konfiguration; ohne sie gilt die Vorgabe.
+NAME="portainer"
+if [ -s "$CF" ] && command -v php >/dev/null 2>&1; then
+    GELESEN=$(php -r '$d=@json_decode(@file_get_contents($argv[1]),true);
+        $n=is_array($d)&&isset($d["portainer_name"])?(string)$d["portainer_name"]:"";
+        echo preg_match("/^[A-Za-z0-9_.\-]{1,64}$/",$n)?$n:"";' "$CF" 2>/dev/null)
+    [ -n "$GELESEN" ] && NAME="$GELESEN"
+fi
+
+if command -v docker >/dev/null 2>&1; then
+    if docker inspect "$NAME" >/dev/null 2>&1; then
+        docker stop "$NAME" >/dev/null 2>&1 && echo "<OK> Container $NAME angehalten."
+        docker rm "$NAME" >/dev/null 2>&1 && echo "<OK> Container $NAME entfernt."
+    else
+        echo "<INFO> Es gibt keinen Container namens $NAME - nichts zu entfernen."
+    fi
+    echo "<INFO> Das Datenverzeichnis von Portainer bleibt erhalten."
+    echo "<INFO> Es enthaelt Ihre Portainer-Benutzer und -Einstellungen."
+    echo "<INFO> Entfernen mit:  docker volume rm portainer_data"
+    echo "<INFO> Docker selbst bleibt installiert - daran haengen moeglicherweise"
+    echo "<INFO> weitere Container. Entfernen mit:  sudo apt purge docker-ce docker-ce-cli containerd.io"
+else
+    echo "<INFO> docker ist nicht vorhanden - es ist nichts anzuhalten."
+fi
+
+# ---------- Geheimnis wegraeumen ----------
+# Die Sicherung enthaelt das Merkwort fuer den unangemeldeten Endpunkt. Sie
+# wird ueberschrieben, bevor sie geloescht wird: ein blosses rm laesst den
+# Inhalt auf der Karte stehen, bis der Block ueberschrieben wird.
+for DATEI in "$BK" "$CF"; do
+    if [ -f "$DATEI" ]; then
+        dd if=/dev/zero of="$DATEI" bs=1k count=8 conv=notrunc >/dev/null 2>&1
+        rm -f "$DATEI" && echo "<OK> $DATEI ueberschrieben und entfernt."
+    fi
+done
+
+echo "<OK> Deinstallation abgeschlossen."
+exit 0
