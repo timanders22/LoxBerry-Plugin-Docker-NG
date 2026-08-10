@@ -153,26 +153,18 @@ $dk_basis = '/plugins/' . $dk_p['plugin'] . '/index.php?token=' . rawurlencode($
 if (class_exists('LBWeb', false)) {
     /* Hilfe in der eingestellten Sprache.
      *
-     * Bis 1.1.0 stand hier fest 'help.html', und diese Datei war fest deutsch -
-     * obwohl es language_de.ini und language_en.ini laengst gab. Gemeldet von
-     * einem Mitleser, zutreffend.
+     * Bis 1.1.0 stand hier fest 'help.html', und diese Datei war fest deutsch.
+     * Gemeldet von einem Mitleser, zutreffend.
      *
-     * 'help.html' behaelt seinen Namen als Rueckfallebene: welchen Pfad
-     * lbheader() fuer den dritten Parameter genau absucht, ist in dieser
-     * Sitzung nicht am LoxBerry-Quelltext nachgeprueft worden. Deshalb wird
-     * der abweichende Name nur uebergeben, wenn die Datei am erwarteten Ort
-     * auch wirklich liegt - sonst bleibt alles beim Bisherigen.
+     * In 1.2.0 stand hier eine Auswahl zwischen help.html und help_en.html,
+     * weil ungeprueft war, welchen Pfad lbheader() absucht. Das ist am
+     * 10.08.2026 an libs/phplib/loxberry_web.php nachgeholt worden:
+     * LBWeb::gethelp() nimmt die genannte Datei aus templates/help/, leitet
+     * daraus <name>.ini ab und laesst readlanguage() die Sprachdateien in
+     * templates/lang/ suchen - also help_de.ini und help_en.ini. Die Auswahl
+     * hier ist damit ueberfluessig; die Sprache waehlt LoxBerry selbst.
      */
-    $dk_hilfe = 'help.html';
-    if (dk_sprache() === 'en') {
-        foreach (array(
-            $dk_p['home'] . '/templates/plugins/' . $dk_p['plugin'] . '/help/help_en.html',
-            dirname(dirname(__DIR__)) . '/templates/help/help_en.html',
-        ) as $dk_kand) {
-            if (is_file($dk_kand)) { $dk_hilfe = 'help_en.html'; break; }
-        }
-    }
-    LBWeb::lbheader('Docker NG', 'https://wiki.loxberry.de/', $dk_hilfe);
+    LBWeb::lbheader('Docker NG', 'https://wiki.loxberry.de/', 'help.html');
 }
 ?>
 <style>
@@ -280,6 +272,11 @@ if (class_exists('LBWeb', false)) {
 
 <h2><?= dk_e(dk_t('EINST.PORTAINER')) ?></h2>
 <p class="sm-hilfe"><?= dk_t('EINST.PORTAINER_TEXT') ?></p>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i><?= dk_e(dk_t('LEGENDE.LESEN')) ?></span>
+<span><i class="sm-punkt sm-b-technik"></i><?= dk_e(dk_t('LEGENDE.TECHNIK')) ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i><?= dk_e(dk_t('LEGENDE.AKTION')) ?></span>
+</div>
 <div class="sm-knopfreihe">
 	<a data-role="none" class="sm-btn sm-b-lesen" target="_blank"
 	   href="http://<?= dk_e($dk_host) ?>:<?= (int) $dk_cfg['portainer_port'] ?>"><?= dk_e(dk_t('EINST.B_OEFFNEN')) ?></a>
@@ -379,6 +376,9 @@ if (class_exists('LBWeb', false)) {
 
 <div class="sm-step"><b><?= dk_e(dk_t('LOX.S3')) ?></b><br>
 <?= dk_t('LOX.S3_TEXT') ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i><?= dk_e(dk_t('LEGENDE.TECHNIK')) ?></span>
+</div>
 <div class="sm-knopfreihe" style="margin-top:10px;">
 	<form action="index.php" method="post">
 		<input data-role="none" type="hidden" name="activetab" value="tab-loxone">
