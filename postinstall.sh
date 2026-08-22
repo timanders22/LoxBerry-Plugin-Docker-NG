@@ -20,21 +20,44 @@ fi
 
 PCONFIG="$BASE/config/plugins/$PFOLDER"
 PLOG="$BASE/log/plugins/$PFOLDER"
+# data/ ab 1.3.0: dort schreibt der Minutentakt seinen Zustand fort. Anders als
+# log/ liegt es NICHT auf der Ramdisk und uebersteht einen Neustart.
+PDATA="$BASE/data/plugins/$PFOLDER"
 CF="$PCONFIG/dockerng.json"
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 
-mkdir -p "$PCONFIG" "$PLOG" || {
+mkdir -p "$PCONFIG" "$PLOG" "$PDATA" || {
     echo "<FAIL> Ordner konnten nicht angelegt werden."
     exit 1
 }
 
 # ---------- Konfiguration zurueckspielen ----------
-# Nur, wenn die vorhandene leer ist oder fehlt. Eine bestehende Konfiguration
-# wird NICHT ueberschrieben - sonst verliert ein Anwender seine Einstellungen,
-# weil eine alte Sicherung herumlag.
+# Nur, wenn die vorhandene nichts taugt. Eine brauchbare Konfiguration wird
+# NICHT ueberschrieben - sonst verliert ein Anwender seine Einstellungen, weil
+# eine alte Sicherung herumlag.
+#
+# ERWEITERT in 1.2.4: geprueft wurde bis 1.2.3 nur auf "leer oder {}". Eine
+# halb geschriebene Datei ist weder das eine noch das andere - sie blieb also
+# liegen, und das Merkwort darin war unlesbar. Dieselbe Pruefung wie in
+# dk_config() und preupgrade.sh: gueltiges JSON mit nichtleerem aktionstoken.
+dk_taugt() {
+    [ -s "$1" ] || return 1
+    command -v php >/dev/null 2>&1 || return 1
+    [ "$(php -r '$d=@json_decode(@file_get_contents($argv[1]),true);
+        echo (is_array($d)&&isset($d["aktionstoken"])&&trim((string)$d["aktionstoken"])!=="")?"1":"0";' "$1" 2>/dev/null)" = "1" ]
+}
+
 if [ -f "$BK" ]; then
-    INHALT=$(cat "$CF" 2>/dev/null)
-    if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
+    if dk_taugt "$CF"; then
+        echo "<INFO> Es liegt bereits eine brauchbare Konfiguration vor - Sicherung nicht angefasst."
+    else
+        # Beschaedigtes beiseitelegen statt wegwerfen: darin koennen
+        # Einstellungen stehen, die die Sicherung noch nicht kennt.
+        if [ -s "$CF" ]; then
+            cp -p "$CF" "$CF.kaputt" 2>/dev/null && chmod 600 "$CF.kaputt" 2>/dev/null
+            echo "<INFO> Die vorgefundene Konfiguration war unbrauchbar und liegt jetzt"
+            echo "<INFO> zur Ansicht unter $CF.kaputt"
+        fi
         if cp -p "$BK" "$CF" && chmod 600 "$CF"; then
             echo "<OK> Konfiguration aus der Sicherung wiederhergestellt."
             echo "<INFO> Das Merkwort fuer den Endpunkt bleibt damit gueltig - die"
@@ -42,9 +65,11 @@ if [ -f "$BK" ]; then
         else
             echo "<FAIL> Die Sicherung liess sich nicht zurueckspielen: $BK"
         fi
-    else
-        echo "<INFO> Es liegt bereits eine Konfiguration vor - Sicherung nicht angefasst."
     fi
+elif [ -s "$CF" ] && ! dk_taugt "$CF"; then
+    echo "<FAIL> Die Konfiguration ist unbrauchbar und es gibt keine Sicherung."
+    echo "<INFO> Beim naechsten Oeffnen der Oberflaeche entsteht ein NEUES Merkwort;"
+    echo "<INFO> alle Adressen im Miniserver muessen danach nachgezogen werden."
 fi
 [ -f "$CF" ] || { echo '{}' > "$CF"; chmod 600 "$CF"; }
 
@@ -61,8 +86,32 @@ echo "<INFO> PHP: $(php -v 2>/dev/null | head -1)"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Plugin installiert oder aktualisiert." \
     >> "$PLOG/dockerng.log" 2>/dev/null
 
-chown -R loxberry:loxberry "$PCONFIG" "$PLOG" 2>/dev/null
+chown -R loxberry:loxberry "$PCONFIG" "$PLOG" "$PDATA" 2>/dev/null
 chmod 600 "$CF" 2>/dev/null
+
+# ---------- Den Minutentakt einmal von Hand starten ----------
+# Hausregel: jeden Cron-Dienst nach der Installation einmal von Hand starten
+# und den Rueckgabewert ansehen. Ein Cron, der ins Leere laeuft, faellt sonst
+# monatelang nicht auf - in Loxone steht dann der Herzschlag still, und
+# niemand findet den Grund.
+#
+# Der Aufruf geht ueber das INSTALLIERTE Programmverzeichnis, nicht ueber den
+# Arbeitsordner des Installers: nur so wird geprueft, was spaeter wirklich
+# laeuft.
+PBIN2="$BASE/bin/plugins/$PFOLDER"
+if [ -f "$PBIN2/dockerng_takt.php" ]; then
+    if (cd "$PBIN2" && php dockerng_takt.php >/dev/null 2>&1); then
+        echo "<OK> Der Minutentakt ist einmal durchgelaufen (Zustandsdatei angelegt)."
+    else
+        echo "<INFO> Der Minutentakt liess sich noch nicht ausfuehren."
+        echo "<INFO> Nach einer Erstinstallation ist das normal: der Webserver und damit"
+        echo "<INFO> auch dieser Aufruf haben die Gruppe docker noch nicht. Im Reiter Test"
+        echo "<INFO> steht ein Knopf, um ihn nach dem Neustart von Hand auszuloesen."
+    fi
+    chown -R loxberry:loxberry "$PDATA" 2>/dev/null
+else
+    echo "<FAIL> $PBIN2/dockerng_takt.php fehlt - der Minutentakt kann nicht laufen."
+fi
 
 echo "<OK> Installation abgeschlossen."
 echo "<INFO> Nach einer Erstinstallation den LoxBerry EINMAL neu starten:"

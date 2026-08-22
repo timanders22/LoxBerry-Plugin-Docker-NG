@@ -3,9 +3,405 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.0.0 — auf einem LoxBerry mit Debian trixie gebaut, laeuft ab PHP 7.4.**
+> **Fassung 1.3.0 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.0 — vom Momentbild zur Überwachung
+
+Bis 1.2.4 lief jede Zeile Code dieses Plugins nur dann, wenn ein Mensch die
+Seite öffnete oder der Miniserver den Endpunkt abrief. Damit war alles, was
+**zwei Momentaufnahmen** braucht, grundsätzlich unerreichbar: ein Herzschlag,
+eine Neustartschleife, eine Veränderung über die Zeit. 1.3.0 ergänzt den
+fehlenden Teil.
+
+> **Alle neuen Funktionen sind ab Werk aus.** Wer aktualisiert, bekommt kein
+> Verhalten, um das er nicht gebeten hat. Einzige Ausnahme sind die neuen
+> Felder in der Statuszeile — sie kommen dazu, die bisherigen bleiben
+> unverändert, und bestehende Loxone-Programme tragen weiter.
+
+### Der Minutentakt
+
+`cron/cron.01min` ruft `bin/dockerng_takt.php`. Das ist die einzige Stelle des
+Plugins, die schreibt; Oberfläche und Endpunkt lesen nur. Der Endpunkt wird vom
+Miniserver im Sechzigsekundentakt abgerufen — würde er selbst schreiben, wäre
+das ein Schreibvorgang je Minute auf der Speicherkarte.
+
+**Die Begründung, warum es das bis dahin nicht gab, war falsch.** Im Quelltext
+stand: *„Docker NG führt keinen Dienst, der zyklisch veröffentlichen könnte."*
+Die Aussage stimmte — der Weg war ungebaut —, die Begründung nicht:
+`plugininstall.pl` verteilt Cron-Skripte aus dem Ordner `cron/` unter anderem
+nach `cron.01min`. Ein eigener Dienst ist dafür nicht nötig. Der Satz ist
+ersetzt.
+
+### Der Herzschlag — die wichtigste Ergänzung
+
+Schritt 5 der Loxone-Anleitung empfahl seit jeher, *„zusätzlich zu melden, wenn
+der Wert eine Weile nicht mehr wechselt"*. Nur gab es keinen Wert, der sich
+zuverlässig ändert: bei stabilem Betrieb war die Statuszeile Abruf für Abruf
+identisch. **Die eigene Empfehlung war mit den vorhandenen Feldern nicht
+umsetzbar.**
+
+`DOCKERNG_ZAEHLER` zählt bei jedem Durchlauf des Minutentakts eine Stelle
+weiter (0…999, umlaufend). Eine Änderungsüberwachung darauf meldet den Ausfall
+auch dann, wenn alle übrigen Werte gut aussehen — denn bei einem Ausfall behält
+der virtuelle Eingang seinen letzten Wert, und in der App sieht dann alles
+normal aus. Läuft der Takt nicht, steht `ZAEHLER` auf `-1`; das ist eine
+Aussage, kein Platzhalter. Die Baustein-Liste in Schritt 4 hat dafür zwei neue
+Zeilen (#8 und #9).
+
+### Wachliste statt Fundliste
+
+Bis 1.2.4 entstand die Stelle `C_<name>` je **gefundenem** Container. Wurde
+einer gelöscht oder umbenannt, verschwand seine Stelle ersatzlos — die
+Befehlserkennung fand ihr Muster nicht mehr und der Eingang behielt seinen
+letzten Wert, also `1`. Loxone meldete auf Dauer „läuft" für einen Container,
+den es nicht mehr gibt.
+
+Jetzt wird über den **Soll**-Bestand gezählt: `-1` = nicht vorhanden, `0` = da
+und läuft nicht, `1` = läuft, dazu `FEHLT` als Sammelwert. Die Auswahl steht in
+der Containertabelle; ohne Auswahl gilt weiterhin „alle", also das Verhalten
+bis 1.2.4. Nebengewinn: die Importdatei richtet sich nicht mehr nach dem
+Augenblicksbestand und bleibt damit stabil — Loxone Config legt beim Import neu
+an und überschreibt nichts, zweimal importiert hieß bisher doppelte Objekte.
+
+### Gesundheit, Autostart, Neustartschleifen
+
+* **`UNGESUND` und `H_<name>`.** Ein Container, der läuft, aber seinen eigenen
+  Healthcheck nicht besteht, war bisher von einem gesunden nicht zu
+  unterscheiden. Genau das ist der Fall, den die Anleitung als Zweck des
+  Plugins nennt: *„das Gateway, das die Auto- oder Wetterdaten liefert."*
+  `{{.HealthStatus}}` liefert es ohne zweiten Aufruf.
+* **`SCHLEIFE`.** Ein Container, der im Sekundentakt abstürzt und neu startet,
+  flackerte bisher zwischen 0 und 1 — und die in der Anleitung empfohlene
+  Einschaltverzögerung von 300 s verschluckte genau diesen Fall. Gezählt wird
+  jetzt der Zuwachs von `RestartCount` in einem gleitenden Fenster von einer
+  Stunde, ergänzt um „läuft seit unter einer Minute bei RestartCount > 0".
+  *Nicht nachgemessen:* ob ein Neustart von Hand diesen Zähler mit erhöht.
+  Deshalb ist die Grenze einstellbar und die Vorgabe 3, nicht 1.
+* **Autostart.** Ein Container mit `RestartPolicy: no` kommt nach einem
+  Stromausfall nicht von selbst wieder — der klassische Stolperstein. Die
+  Containertabelle sagt es jetzt.
+
+Alle drei kommen aus **einem** zusätzlichen `docker inspect` für alle Container,
+nicht aus einem je Container.
+
+### Plattenplatz und Log-Rotation
+
+`PLATZFREI` meldet den freien Platz in MB. Der json-file-Treiber von Docker hat
+als Vorgabe `max-size: -1`, also **unbegrenzt** — ein einziger gesprächiger
+Container in einer Reconnect-Schleife schreibt die Speicherkarte voll, und ein
+volles Dateisystem macht den LoxBerry unbootbar. Das ist der einzige Punkt an
+diesem Plugin, der das kann.
+
+`postroot.sh` richtet deshalb bei der Installation `max-size: 10m` und
+`max-file: 3` ein — **zurückhaltend**: nur wenn noch gar keine `log-opts`
+gesetzt sind, durch Zusammenführen statt Ersetzen einer vorhandenen
+`daemon.json`, ohne Docker neu zu starten, und mit dem ausdrücklichen Hinweis,
+dass die Einstellung nur für künftig erzeugte Container gilt. Die Deinstallation
+nimmt sie bewusst **nicht** zurück: sie schützt das Dateisystem und gehört
+inzwischen zum System.
+
+### MQTT
+
+Ein eigener Reiter mit eigenem Formular und eigenem Speicher-Handler — ein
+Sammelhandler würde beim Absenden des einen Formulars die Haken des anderen
+stillschweigend nullen. Der Weg ist der im Haus übliche: eine UDP-Zeile an den
+UDP-Eingang des MQTT-Gateways, das seit LoxBerry 3 Systembestandteil ist. Kein
+`phpMQTT`, kein `socket_create()` — Letzteres steckt in einer Erweiterung, die
+nicht garantiert geladen ist, und ihr Fehlen ist kein abfangbarer Fehler,
+sondern ein fataler; im Cron sieht den niemand.
+
+Die Themenliste im Reiter ist keine Beschreibung, sondern der tatsächliche
+Sendestand: sie wird aus demselben Aufruf erzeugt, den der Minutentakt zum
+Senden benutzt. **Gehört wird auf nichts.** Ein Kommandothema wäre der
+Schaltweg, den dieses Plugin nicht anbietet, und über einen Broker wäre er
+schlechter geschützt als der Endpunkt.
+
+### Benachrichtigungen und Healthcheck
+
+Wenn der Webserver den Docker-Socket nicht erreicht — laut README der Regelfall
+nach jeder frischen Installation —, stand der Klartext dazu bisher
+ausschließlich auf der Plugin-Seite. Wer sie nicht öffnet, sah nichts. Jetzt:
+
+* `notify_ext()` erzeugt den roten Punkt am Plugin-Symbol. Gemeldet wird nur bei
+  **Wechsel** des Befundes — eine Meldung je Minute wäre Rauschen.
+* `bin/healthcheck` klinkt sich in den LoxBerry-Healthcheck ein. Nebeneffekt
+  ohne Zusatzarbeit: `healthcheck.pl` veröffentlicht das Ergebnis zusätzlich
+  retained nach MQTT.
+
+Beide benutzen denselben `dk_befund()` wie die Oberfläche. Drei Stellen, die
+dasselbe anders sagen, wären zwei zu viel.
+
+### Schutz gegen fremde Formulare
+
+**Der schwerste Befund dieser Runde, und er war seit 1.0.0 offen.** `htmlauth/`
+schützt gegen den unangemeldeten Aufruf — **nicht** dagegen, dass der Browser
+eines angemeldeten Bedieners ein Formular abschickt, das auf einer fremden
+Seite steht. Die HTTP-Basic-Anmeldung schickt er dabei automatisch mit;
+SameSite greift nicht.
+
+Damit konnte bis 1.2.4 eine beliebige fremde Seite `speichern=1&token_neu=1`
+absetzen. Danach bekamen sämtliche virtuellen Eingänge im Miniserver HTTP 403,
+die Überwachung war tot — ohne jede Rückmeldung. Über `log_leeren=1` ließ sich
+gleich die Spur wegräumen. Der Angreifer sieht die Antwort nicht; er braucht
+sie auch nicht.
+
+Jetzt: ein Merkmal, aus dem Aktionstoken **abgeleitet** statt gespeichert
+(`hash_hmac`), in **jedem** der elf Formulare — und **eine** zentrale Prüfung
+vor allen Handlern. Einen einzelnen Handler kann man beim Erweitern vergessen,
+einen Wachposten am Eingang nicht. Fällt sie durch, wird `$_POST` bis auf den
+aktiven Reiter geleert **und gemeldet**: ein Formular, das wortlos nichts tut,
+schickt den Anwender auf die Suche nach einem Fehler, den es nicht gibt.
+
+Gemessen (`Pruefung-DockerNG-1.3.0/csrf_probe.py`), an der Wirkung — steht
+hinterher ein anderes Merkwort in der Konfiguration?
+
+| Fall | 1.2.3 | 1.3.0 |
+|---|---|---|
+| POST ohne Merkmal | **wirkt** | abgewiesen |
+| POST mit falschem Merkmal | **wirkt** | abgewiesen |
+| POST mit richtigem Merkmal | wirkt | wirkt |
+
+Die dritte Zeile ist die Gegenrichtung der Eichung: ohne sie bestünde auch ein
+Plugin, das überhaupt nichts mehr tut.
+
+### Selbstprüfung am Endpunkt
+
+`?selftest=1&token=…` — vom Hausstandard an jedem tokengeschützten Endpunkt
+verlangt und bis 1.2.4 nicht vorhanden. Sie beantwortet „ist die Adresse samt
+Merkwort richtig?", ohne irgendetwas anzufassen: **kein Gerätekontakt, kein
+Schreibzugriff**, deshalb steht sie vor jedem `docker`-Aufruf.
+
+    SELFTEST;OK=1;TOKEN=OK
+    403  SELFTEST;OK=0;ERR=TOKEN
+    403  SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET
+
+Damit kann der Reiter *Test* den eigenen Endpunkt **wirklich abrufen**, statt
+nur einen Link anzubieten, den der Anwender selbst anklicken muss — das war
+keine Prüfung, sondern eine Einladung zu einer. Drei Ausgänge, auf 300 Sekunden
+gebremst, mit Knopf zum sofortigen Nachmessen.
+
+Nebenbei: der Parameter wird jetzt zuerst auf seinen **Typ** geprüft.
+`?token[]=x` macht ein Feld daraus; unter PHP 8 stünde sonst eine Warnung
+mitten in der Antwort an den Miniserver.
+
+### Kleineres
+
+* **Setup-Token wird vorgegeben** statt aus dem Containerprotokoll gefischt.
+  `postroot.sh` legt ihn mit `--setup-token` fest; damit entfällt die Bindung an
+  ein Ausgabeformat, das Portainer schon zweimal geändert hat, und der Wert
+  überlebt jeden Neustart des Containers. Kennt die installierte Fassung den
+  Schalter nicht, wird ohne ihn erneut versucht und der alte Weg benutzt — und
+  das steht so im Installationsprotokoll.
+* **Protokoll jedes Containers** in der Oberfläche, nicht nur das von Portainer.
+* **Abbild-Aktualisierungen** über einen Prüfsummenvergleich (HEAD, zählt nicht
+  gegen das Abrufkontingent von Docker Hub). Drei Ausgänge: verfügbar, aktuell,
+  **nicht messbar** — Letzteres löst nie eine Meldung aus. Ab Werk aus.
+* **Vier neue Zeilen im Reiter Test**: läuft der Minutentakt (Alter der
+  Zustandsdatei, nicht Prozessnummer), Stand des Herzschlags, ist der MQTT-Weg
+  vollständig, sind die Container-Protokolle begrenzt. Dazu ein Knopf, der den
+  Minutentakt einmal von Hand auslöst — die Hausregel verlangt, jeden
+  Cron-Dienst nach der Installation einmal von Hand zu starten.
+* **Die Kongruenzprobe war beim Bau dieser Fassung selbst blind geworden**: ihr
+  Suchmuster nahm nur das erste Teilstück der verketteten Formatzeichenkette und
+  blieb grün, während sechs neue Felder außerhalb ihres Blickfelds lagen.
+  Repariert und in beide Richtungen geeicht.
+* **`postinstall.sh`** startet den Minutentakt nach der Installation einmal von
+  sich aus und sagt, was dabei herauskam.
+* **`postupgrade.sh` ergänzt** — es fehlte als einziges der üblichen Skripte.
+  Es prüft den Fall, den eine Neuinstallation nie durchläuft: eine vorhandene
+  Konfiguration ohne die neuen Schlüssel. Dazu zählt es nach, ob
+  `cron/cron.01min` wirklich im System gelandet ist und ob der Platzhalter
+  `REPLACELBPBINDIR` ersetzt wurde — bleibt das aus, steht der Herzschlag still,
+  und das fällt sonst monatelang nicht auf.
+* **Protokollanzeige rückwärts mit `fseek`** statt `file()`. Der Hausstandard
+  verbietet für diese Stelle ausdrücklich beides: die ganze Datei einlesen und
+  `exec("tail")`. Gemessen an 12.000 Zeilen: 0,05 ms und 0 kB zusätzlich
+  gegenüber 0,37 ms und 2 MB.
+* **Selbstwiderspruch in `release.cfg`/`prerelease.cfg` aufgelöst.** Der Kopf
+  sagte „ab 1.2.3 gilt das kleine v", der Fuß derselben Datei im Präsens „die
+  Reihe benutzt deshalb den Präfix `ng-`" — in einer Datei, deren erklärter
+  Zweck es ist, das Ausliefern des falschen Archivs zu verhindern. Der Fußteil
+  steht jetzt in der Vergangenheit; die alten `ng-`-Tags bleiben erklärt.
+* **Der Abschnitt zur Hilfe war in beide Richtungen falsch**: er nannte eine
+  Datei `templates/help/help_en.html`, die es nicht gibt, und verneinte den
+  `help_de.ini`/`help_en.ini`-Weg, den der Code seit 1.2.x geht. Richtiggestellt
+  mit dem Nachweis aus `libs/phplib/loxberry_web.php`.
+* **Vier weitere Prüfstände** unter `Pruefung-DockerNG-1.3.0/`, alle geeicht:
+  Merkwortverlust, CSRF-Wachposten, Selbstprüfung am Endpunkt, Minutentakt.
+
+## Neu in 1.2.4 — sechs Befunde aus einer zeilenweisen Durchsicht
+
+Alle sechs am Quelltext nachgeprüft. Die Reihenfolge ist die nach Gewicht,
+nicht die nach Aufwand.
+
+### Die Selbstheilung zerstörte im Fehlerfall ihre eigene Rettungskopie
+
+Der schwerste Fund, und ausgerechnet an der Vorkehrung aus 1.2.0. Geprüft
+wurde in `dk_config()` auf **„leer oder `{}`"**. Eine halb geschriebene oder
+beschädigte `dockerng.json` — auf einer Speicherkarte nach einem Stromausfall
+kein Ausnahmefall — ist weder das eine noch das andere. Also: keine
+Wiederherstellung, `dk_json_lesen()` gab bei ungültigem JSON stumm ein leeres
+Feld zurück, das Merkwort war `''`, `dk_token()` würfelte ein neues — und
+`dk_config_schreiben()` kopierte es **über die Sicherung**. Damit war das alte
+Merkwort in **beiden** Kopien fort, ausgelöst durch das bloße Öffnen der
+Oberfläche, protokolliert nur als „Konfiguration gespeichert". Sämtliche
+Adressen im Miniserver waren tot.
+
+Behoben an vier Stellen:
+
+- Es entscheidet nicht mehr die **Form** des Textes, sondern ob ein Merkwort
+  darin steht (`dk_konfig_taugt()`).
+- Eine beschädigte Datei wird als `dockerng.json.kaputt` **beiseitegelegt**,
+  nicht verworfen — und die Tatsache steht im Protokoll.
+- Die Sicherung wird nur noch **mit** einem Merkwort darin mitgezogen. Sie ist
+  die Rückfallebene; sie darf nie schlechter werden als das, was sie sichert.
+- `preupgrade.sh` und `postinstall.sh` prüfen dasselbe. Bis 1.2.3 genügte
+  `[ -s "$CF" ]`, also „nicht leer" — eine kaputte Datei überschrieb damit die
+  zuvor gute Sicherung.
+
+Dazu schreibt `dk_json_schreiben()` jetzt **unteilbar**: Nebendatei mit der
+Prozessnummer im Namen, Rechte **vor** dem Inhalt, dann `rename()`. Bis 1.2.3
+stand die Datei mit dem Merkwort für die Dauer des Schreibens mit den Vorgaben
+der umask da — und ein Abbruch mittendrin erzeugte genau die Trümmerdatei, die
+oben die Selbstheilung aushebelte.
+
+### `postroot.sh` prüfte die Socket-Rechte mit dem falschen Werkzeug
+
+```bash
+su loxberry -s /bin/sh -c "docker ps >/dev/null 2>&1"
+```
+
+`su` legt eine **neue** Sitzung an und liest die Gruppen frisch aus
+`/etc/group` — die soeben per `usermod` gesetzte Gruppe `docker` ist dort
+sofort wirksam. Der Test lief also nach **jeder** Neuinstallation durch, das
+Skript meldete „erreicht den Docker-Socket bereits" und übersprang den
+`else`-Zweig mit der einzigen Anweisung, auf die es ankommt: einmal neu
+starten. Der Anwender startete nicht neu und las in der Oberfläche das
+Gegenteil.
+
+Gefragt wird jetzt der **laufende Webserver** selbst — `Groups:` aus
+`/proc/<pid>/status` gegen die GID von `docker`. Das ist genau die Frage, um
+die es geht. Findet sich kein Prozess, sagt das Skript das und gibt den Hinweis
+trotzdem: ein Strich statt eines Befunds wäre das Schlechteste.
+
+### Port und Containername waren Bedienelemente ohne Wirkung
+
+`postroot.sh` verdrahtet `-p=9000:9000` fest. Das Feld *Port der
+Portainer-Oberfläche* änderte ausschließlich das Ziel des Öffnen-Knopfs. Wer
+wegen einer Portbelegung 9001 eintrug, speicherte und klickte, bekam
+„Verbindung abgelehnt" — der Container lauschte weiter auf 9000. Das ist
+dasselbe, was `plugin.cfg` an anderer Stelle (`CUSTOM_LOGLEVELS`) ausdrücklich
+als schlimmer als gar kein Bedienelement bezeichnet.
+
+Jetzt wird der **wirkliche** Port am Container abgelesen (`docker port`), das
+Schema aus dem Container-Port abgeleitet (9000 → HTTP, 9443 → HTTPS), und die
+Oberfläche sagt unter dem Knopf, welcher der beiden Werte gerade gilt. Der
+eingestellte Wert bleibt die Rückfallebene, und der Hilfetext sagt jetzt
+ausdrücklich, dass dieses Feld den Container **nicht** neu einrichtet.
+
+### `GESTOPPT` löste die eigene Bauanleitung dauerhaft aus
+
+`docker ps -a` listet jeden je erzeugten und nicht entfernten Container — auch
+den Sicherungscontainer, der nachts läuft und sauber mit Code 0 endet. Auf
+einem gewachsenen LoxBerry ist `GESTOPPT` praktisch nie 0. Wer Schritt 4
+wörtlich nachbaute (`DOCKERNG_GESTOPPT` → Schwellwertschalter „Ein ab 1" →
+ODER → Benachrichtigung), bekam eine Dauerstörung — und weil der
+Benachrichtigungs-Baustein nur beim Wechsel von Aus auf Ein sendet,
+**verschluckte sie anschließend alle anderen Meldungen an demselben ODER**.
+Die Anleitung warnt vor genau diesem Mechanismus und lief mit ihrem eigenen
+ersten Baustein hinein.
+
+Neu ist `AUSFALL`: gezählt wird, was weder läuft noch planmäßig beendet ist —
+`Exited (0)` und `Created` bleiben außen vor. `GESTOPPT` bleibt unverändert
+erhalten, damit bestehende Loxone-Programme weiter tragen; die Anleitung nennt
+ab jetzt `AUSFALL`.
+
+### Pausierte Container galten als „läuft"
+
+`stripos($status, 'Up') === 0`. Docker gibt einen pausierten Container als
+`Up 4 minutes (Paused)` aus — der Test schlug an. Ein per SIGSTOP eingefrorener
+Container meldete nach Loxone „läuft". Wer in Portainer das MQTT-Gateway
+pausiert, bekam von der Überwachung, die genau dafür gebaut wurde, kein Wort.
+
+Maßgeblich ist jetzt `{{.State}}` — `created, running, paused, restarting,
+exited, removing, dead`. Für sehr alte Docker-Fassungen bleibt die
+Textauswertung als Rückfallebene, diesmal aber **mit** dem Ausschluss von
+`(Paused)`. Neu ist zusätzlich `PAUSIERT`, und die Containertabelle zeigt den
+Stand jetzt in Klartext statt nur den englischen Rohtext.
+
+### Die XML-Vorlage war gegen einen veralteten Stand der Referenz gebaut
+
+Der Kommentar nennt `ap_xml_virtual_in_http()` aus dem APC-UPS-Plugin als
+Vorlage. Die Referenz hat seit ihrer 1.2.0 `HintText` am Wurzelelement,
+`<Info templateType="2" minVersion="17010727"/>` als erstes Kindelement sowie
+`Unit` und `HintText` je Eintrag. Docker NG hatte nichts davon — nachgezählt im
+Arbeitsordner: **36 Plugin-Ordner setzen das Info-Element, Docker NG war nicht
+darunter.**
+
+Dazu ein zweiter Punkt: die Container-Einträge trugen `Analog="false"`
+zusammen mit dem **Analog**-Platzhalter `\v` und der vollständigen
+Analog-Skalierung. Im gesamten Arbeitsordner war das die **einzige** Fundstelle
+von `Analog="false"` an einem `VirtualInHttpCmd`; alle 15 übrigen sitzen an
+`VirtualOutCmd`, wo sie hingehören.
+
+### Kleineres, in derselben Durchsicht
+
+- `dk_token()` verwarf den Rückgabewert von `dk_config_schreiben()`. Ließ sich
+  die Konfiguration nicht schreiben, zeigte der Reiter *Test* dauerhaft
+  „Merkwort gesetzt, 24 Zeichen" — fest auf grün verdrahtet —, während auf
+  Platte keines stand und bei jedem Seitenaufruf ein anderes angezeigt wurde.
+- Der Zwischenspeicher der Konfiguration wird nach dem Speichern nachgezogen.
+  Bis 1.2.3 fragte die Portainer-Kachel nach einer Namensänderung noch den
+  alten Namen ab und stand rot, während das Feld darüber schon den neuen zeigte.
+- `dk_portainer_neustart()` merkt sich den Setup-Token **vor** dem Neustart und
+  wartet, bis ein **anderer** auftaucht. Bis 1.2.3 wurde drei Sekunden
+  gewartet und dann der letzte Treffer aus `--tail 400` genommen — auf einem
+  Raspberry Pi regelmäßig der alte, längst abgelaufene. Außerdem sind
+  „Neustart fehlgeschlagen" und „kein Token gefunden" jetzt zwei verschiedene
+  Auskünfte; Letzteres ist bei eingerichtetem Portainer der Regelfall und
+  keine Fehlermeldung mehr.
+- `dk_container()` und `dk_version()` haben einen Zwischenspeicher. Bis 1.2.3
+  lief `docker ps -a` je Seitenaufbau zweimal — das kostete nicht nur einen
+  Prozessstart, sondern lieferte zwei verschiedene Momentaufnahmen: wurde
+  Portainer dazwischen angehalten, zeigte die Tabelle „Up" und die Kachel
+  daneben „gestoppt".
+- Der Portainer-Block in `postroot.sh` lief auch **ohne** Docker durch (vier
+  rohe „command not found"-Zeilen, kein `<FAIL>`, `exit 0`), löschte einen
+  bewusst angehaltenen Container per `docker rm --force` und legte ihn mit den
+  Vorgaben des Plugins neu an, und `--filter name=portainer` traf als
+  Teilstring auch `my-portainer`. Jetzt: Vorbedingungen geprüft, ein
+  vorhandener Container wird **gestartet, nicht ersetzt**, und der Filter ist
+  mit `^portainer$` genau.
+- `curl` und `sh get-docker.sh` werden auf Erfolg geprüft. Ohne
+  Internetverbindung meldete die Installation bis 1.2.3 Erfolg und das Plugin
+  danach „Docker wurde nicht gefunden".
+- `uninstall/uninstall` empfahl `docker volume rm portainer_data`. `postroot.sh`
+  hängt das Datenverzeichnis aber als **Hostpfad** ein (`/opt/portainer`) —
+  der Befehl endete mit „no such volume", der Anwender glaubte aufgeräumt zu
+  haben, und die Portainer-Konten samt Kennwort-Hashes lagen weiter auf der
+  Karte. Der richtige Ort stand nirgends.
+- Zwei Container, deren Namen nach der Säuberung auf denselben Loxone-Schlüssel
+  fallen (`mein-dienst` und `mein.dienst` → `C_mein_dienst`), werden jetzt
+  **gemeldet**. Bis 1.2.3 geschah das lautlos: Loxone nahm das erste Vorkommen,
+  der zweite Container blieb unbeobachtet — und in der Tabelle standen zwei
+  Zeilen, die wie zwei getrennte Eingänge aussahen.
+- Der Reiter *Test* hat vier neue Zeilen: ist die Konfiguration heil (drei
+  Ausgänge, nicht zwei), gibt es eine brauchbare Zweitschrift, **nennt die
+  Anleitung alle Felder, die der Endpunkt sendet** (am Quelltext des Endpunkts
+  gemessen), und ist die erzeugbare Importdatei wohlgeformt.
+- Die Sammelfelder stehen jetzt an **einer** Stelle (`dk_lox_felder()`).
+  Vorher standen sie dreimal — im XML-Erzeuger, in der Tabelle der
+  Befehlserkennungen und als von Hand getippte Beispielzeile —, und die drei
+  waren auseinandergelaufen: `PORTAINER` wurde gesendet und stand nirgends,
+  `GRUND` fehlte in der Beispielzeile.
+- `.sm-breit` aus dem Hausstandard ergänzt; es war die einzige fehlende Klasse.
+- Angezeigte Adresse und erzeugte Importdatei benutzen jetzt dasselbe Schema
+  und denselben Port. Bis 1.2.3 stand in der Anzeige fest `http://` ohne Port,
+  während die Vorlage daneben das Schema aus `$_SERVER` ableitete und den Port
+  mitnahm — auf einem LoxBerry mit HTTPS konnten die beiden nicht gleichzeitig
+  stimmen.
 
 ## Neu in 1.2.0 — fünf Befunde eines Mitlesers
 
@@ -97,13 +493,19 @@ Plugins** — Docker NG war mit 16 der schwerste Fall, aber kein Einzelfall. Die
 
 ### Hilfe nur auf Deutsch, kein Deinstallationsskript
 
-Beides zutreffend. Es gibt jetzt `templates/help/help_en.html`; die Sprache
-wird aus der LoxBerry-Einstellung abgeleitet, und `help.html` bleibt
-Rückfallebene. Der vom Melder vorgeschlagene Weg über `help_de.ini`/`help_en.ini`
-ist **nicht** übernommen worden — welchen Pfad `lbheader()` für den dritten
-Parameter absucht, ist hier nicht am Quelltext nachgeprüft, und ein ungeprüfter
-Umbau an genau der Stelle, an der schon einmal ein Pfad falsch war, wäre die
-falsche Reihenfolge.
+Beides zutreffend.
+
+> **Nachtrag.** Dieser Absatz beschrieb bis 1.2.4 einen Zwischenstand als
+> Endstand und war damit in beide Richtungen falsch: Er nannte eine Datei
+> `templates/help/help_en.html`, die es im Plugin **nicht gibt**, und er
+> verneinte den Weg über `help_de.ini`/`help_en.ini`, den der Code seit 1.2.x
+> tatsächlich geht. Nachgeholt wurde die offene Prüfung am 10.08.2026 an
+> `libs/phplib/loxberry_web.php`: `LBWeb::gethelp()` nimmt die genannte Datei
+> aus `templates/help/`, leitet daraus `<name>.ini` ab und lässt
+> `readlanguage()` die Sprachdateien in `templates/lang/` suchen — also
+> `help_de.ini` und `help_en.ini`. Die Sprache wählt damit LoxBerry selbst;
+> eine zweite Hilfedatei ist überflüssig. So steht es auch im Quelltext der
+> Oberfläche.
 
 `uninstall/uninstall` hält den Portainer-Container an und entfernt ihn,
 überschreibt die Sicherung mit dem Merkwort und löscht sie. **Docker selbst
@@ -256,7 +658,7 @@ Zwei Pakete sind aus der Paketliste entfernt:
 
 | Aufruf | Antwort |
 |---|---|
-| `aktion=status` | `DOCKERNG;OK=1;GESAMT=3;LAEUFT=3;GESTOPPT=0;PORTAINER=1;C_portainer=1` |
+| `aktion=status` | `DOCKERNG;OK=1;GESAMT=3;LAEUFT=3;GESTOPPT=0;AUSFALL=0;PAUSIERT=0;UNGESUND=0;FEHLT=0;SCHLEIFE=0;PORTAINER=1;ZAEHLER=42;PLATZFREI=4096;GRUND=-;C_portainer=1;H_portainer=2` |
 | `aktion=container&name=…` | Zustand eines einzelnen Containers |
 | `aktion=liste` | eine Zeile je Container |
 | `aktion=roh` | vollständiger Zustand als JSON |
@@ -276,27 +678,55 @@ und Containernamen, die nicht ins Muster passen, werden **abgewiesen und
 benannt**, nicht stillschweigend zurechtgebogen: ein still gekürzter Name fände
 den Container nicht und meldete „läuft nicht" — eine stille Falschaussage.
 
-## Warum es keinen MQTT-Reiter gibt
+## MQTT
 
-Der Hausstandard sieht MQTT als Regelweg vor. Docker NG führt aber **keinen
-Dienst**, der zyklisch veröffentlichen könnte; Loxone holt den Zustand über den
-HTTP-Endpunkt. Ein MQTT-Weg wäre nachrüstbar, ist aber ungebaut — und wird
-deshalb auch nicht behauptet.
+Seit 1.3.0 vorhanden, mit eigenem Reiter — und **ab Werk aus**. Veröffentlicht
+wird im Minutentakt über den UDP-Eingang des MQTT-Gateways, das seit LoxBerry 3
+Systembestandteil ist. MQTT tritt **nicht** an die Stelle des HTTP-Endpunkts,
+es steht daneben.
+
+Bis 1.2.4 stand an dieser Stelle die Begründung, Docker NG führe „keinen
+Dienst, der zyklisch veröffentlichen könnte". Die Aussage stimmte, die
+Begründung nicht — siehe *Neu in 1.3.0*.
+
+**Ohne das Abo geschieht nichts:** im MQTT-Gateway muss der Vorsatz mit `/#`
+abonniert sein. Der fehlende Eintrag ist der häufigste Grund, warum am
+Miniserver nichts ankommt, und es gibt keine Fehlermeldung, die darauf hinweist.
 
 ## Aufbau
 
-    webfrontend/htmlauth/index.php   Bedienoberflaeche, vier Reiter
-    webfrontend/html/dk_lib.php      Pfade, Konfiguration, Sprache, Docker, Loxone-Vorlage
+    webfrontend/htmlauth/index.php   Bedienoberflaeche, fuenf Reiter
+    webfrontend/html/dk_lib.php      Pfade, Konfiguration, Sprache, Docker,
+                                     Zustand, MQTT, Loxone-Vorlage
     webfrontend/html/index.php       Endpunkt fuer den Miniserver
+    bin/dockerng_takt.php            Minutentakt: Herzschlag, Schleifen, Platz, MQTT
+    bin/healthcheck                  Anschluss an den LoxBerry-Healthcheck
+    cron/cron.01min                  ruft den Minutentakt auf
     templates/lang/language_de.ini   Sprachdatei Deutsch
     templates/lang/language_en.ini   Sprachdatei Englisch
-    templates/help/help.html         Hilfetext hinter dem Fragezeichen
-    postroot.sh                      Docker und Portainer einrichten
+    templates/lang/help_de.ini       Hilfetexte Deutsch
+    templates/lang/help_en.ini       Hilfetexte Englisch
+    templates/help/help.html         Geruest fuer die Hilfe hinter dem Fragezeichen
+    preupgrade.sh                    Konfiguration vor der Neuinstallation sichern
+    postinstall.sh                   Ordner anlegen, Sicherung zurueckspielen
+    postupgrade.sh                   nur beim Update: Cron und neue Schluessel pruefen
+    postroot.sh                      Docker, Log-Rotation und Portainer einrichten
+    uninstall/uninstall              Portainer entfernen, Geheimnisse wegraeumen
     dpkg/apt                         Paketliste
+    plugin.cfg                       Fassung, Untergrenzen, Auto-Update
+    release.cfg / prerelease.cfg     Adressen fuer das Auto-Update
 
 Die Bibliothek liegt unter `html/` und nicht unter `htmlauth/`, weil der
 Loxone-Endpunkt sie ebenfalls braucht. Eine zweite Kopie wäre die häufigste
-Ursache dafür, dass zwei Dateien gleichen Namens auseinanderlaufen.
+Ursache dafür, dass zwei Dateien gleichen Namens auseinanderlaufen. Aus
+demselben Grund laden auch `bin/dockerng_takt.php` und `bin/healthcheck` genau
+diese eine Datei — über eine Kandidatenliste, weil der Weg von `bin/` dorthin
+im entpackten Archiv ein anderer ist als im installierten Zustand.
+
+Was in `data/plugins/<ordner>/zustand.json` steht, ist **neu erzeugbar**:
+Herzschlag, Neustartzähler, Plattenbelegung. Deshalb liegt dort auch keine
+Zweitschrift daneben — anders als bei der Konfiguration, in der das Merkwort
+für den Endpunkt steht.
 
 ## Lizenz
 

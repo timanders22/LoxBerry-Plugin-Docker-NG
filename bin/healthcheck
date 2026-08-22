@@ -1,0 +1,85 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Docker NG - Anschluss an den LoxBerry-Healthcheck
+ *
+ * Seit LoxBerry 2.2 ruft sbin/healthcheck.pl eine ausfuehrbare Datei
+ * bin/healthcheck des Plugins auf - einmal mit 'title', einmal mit 'check'.
+ * Der Installer legt bin/ rekursiv mit 755 an, diese Datei ist damit von
+ * selbst ausfuehrbar.
+ *
+ * Antwort: JSON mit desc, status, result. Der Status folgt der Skala von
+ * LoxBerry:  3 = Fehler (rot), 4 = Warnung (gelb), 5 = in Ordnung (gruen),
+ * 6 = Hinweis (blau). Leer oder 0 = unbekannt (grau).
+ *
+ * WARUM DAS HIER STEHT
+ * Wenn der Webserver den Docker-Socket nicht erreicht - laut README der
+ * Regelfall nach jeder frischen Installation -, stand der Klartext dazu bis
+ * 1.2.4 ausschliesslich auf der Plugin-Seite. Wer sie nicht oeffnet, sah auf
+ * der LoxBerry-Startseite ein unauffaelliges Symbol. Genau der Anwender, bei
+ * dem die Einrichtung an dieser Stelle haengt, hatte also keinen Weg, es zu
+ * erfahren.
+ *
+ * NEBENEFFEKT OHNE ZUSATZARBEIT: healthcheck.pl veroeffentlicht das Ergebnis
+ * zusaetzlich retained nach MQTT unter <rechnername>/healthcheck/<titel>.
+ *
+ * Der Healthcheck laeuft cron.daily und cron.reboot sowie auf Knopfdruck. Er
+ * ist keine Sekundenueberwachung - dafuer ist der Minutentakt da.
+ */
+
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
+ini_set('display_errors', '0');
+
+$dk_lib = '';
+foreach (array(
+    dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/dk_lib.php',
+    dirname(dirname(__DIR__)) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/dk_lib.php',
+    dirname(__DIR__) . '/webfrontend/html/dk_lib.php',
+) as $k) {
+    if (is_file($k)) { $dk_lib = $k; break; }
+}
+
+$dk_was = isset($argv[1]) ? strtolower((string) $argv[1]) : 'check';
+
+if ($dk_was === 'title') {
+    echo "Docker NG\n";
+    exit(0);
+}
+
+if ($dk_lib === '') {
+    // Fail closed, und mit Begruendung. Ein grauer Punkt ohne Text laesst den
+    // Anwender suchen, was er falsch gemacht hat.
+    echo json_encode(array(
+        'desc'   => 'Docker NG',
+        'status' => 3,
+        'result' => 'Die Bibliothek dk_lib.php wurde nicht gefunden - das Plugin ist unvollstaendig installiert.',
+    )) . "\n";
+    exit(0);
+}
+require_once $dk_lib;
+
+$b = dk_befund();
+
+/* Ein zweiter, unabhaengiger Punkt: laeuft der Minutentakt ueberhaupt?
+ * Der Befund oben kann tadellos aussehen, waehrend die Zahlen dahinter seit
+ * Tagen stehen. Eine Prozessnummer beantwortet das nicht - ein Prozess kann
+ * dastehen und nichts mehr tun. Das Alter der Zustandsdatei beantwortet es. */
+$alter = dk_zustand_alter();
+$status = (int) $b['schwere'];
+$text   = (string) $b['text'];
+
+if ($alter < 0) {
+    $status = min($status, 4);
+    $text .= ' ' . dk_t('BEFUND.TAKT_NIE');
+} elseif ($alter > 300) {
+    $status = min($status, 4);
+    $text .= ' ' . sprintf(dk_t('BEFUND.TAKT_ALT'), (int) round($alter / 60));
+}
+
+echo json_encode(array(
+    'desc'    => 'Docker NG',
+    'status'  => $status,
+    'result'  => $text,
+    'logfile' => dk_paths()['log'],
+), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+exit(0);

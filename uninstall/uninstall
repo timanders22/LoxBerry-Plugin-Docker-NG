@@ -33,25 +33,63 @@ fi
 
 if command -v docker >/dev/null 2>&1; then
     if docker inspect "$NAME" >/dev/null 2>&1; then
-        docker stop "$NAME" >/dev/null 2>&1 && echo "<OK> Container $NAME angehalten."
-        docker rm "$NAME" >/dev/null 2>&1 && echo "<OK> Container $NAME entfernt."
+        # Wirkung nachzaehlen, nicht dem Rueckgabewert des Aufrufs glauben.
+        docker stop "$NAME" >/dev/null 2>&1
+        docker rm "$NAME" >/dev/null 2>&1
+        if docker inspect "$NAME" >/dev/null 2>&1; then
+            echo "<FAIL> Der Container $NAME liess sich NICHT entfernen."
+            echo "<INFO> Von Hand nachholen:  docker rm -f $NAME"
+        else
+            echo "<OK> Container $NAME angehalten und entfernt."
+        fi
     else
         echo "<INFO> Es gibt keinen Container namens $NAME - nichts zu entfernen."
     fi
-    echo "<INFO> Das Datenverzeichnis von Portainer bleibt erhalten."
+    # BERICHTIGT in 1.2.4: hier stand "docker volume rm portainer_data".
+    # postroot.sh haengt Portainers Datenverzeichnis aber als HOSTPFAD ein
+    # (--volume=/opt/portainer:/data), nicht als benannten Datentraeger. Der
+    # genannte Befehl endete deshalb mit "no such volume" - der Anwender
+    # glaubte aufgeraeumt zu haben, waehrend die Portainer-Konten samt
+    # Kennwort-Hashes weiter auf der Karte lagen. Und der richtige Ort stand
+    # nirgends, er konnte ihn also nicht einmal selbst finden.
+    DATENORT="/opt/portainer"
+    echo "<INFO> Das Datenverzeichnis von Portainer bleibt erhalten:"
+    if [ -d "$DATENORT" ]; then
+        echo "<INFO>   $DATENORT  (vorhanden, $(du -sh "$DATENORT" 2>/dev/null | cut -f1))"
+    else
+        echo "<INFO>   $DATENORT  (nicht vorhanden - offenbar anders eingerichtet)"
+        echo "<INFO> Den wirklichen Ort nennt:  docker inspect $NAME --format '{{json .Mounts}}'"
+    fi
     echo "<INFO> Es enthaelt Ihre Portainer-Benutzer und -Einstellungen."
-    echo "<INFO> Entfernen mit:  docker volume rm portainer_data"
+    echo "<INFO> Entfernen mit:  sudo rm -rf $DATENORT"
     echo "<INFO> Docker selbst bleibt installiert - daran haengen moeglicherweise"
     echo "<INFO> weitere Container. Entfernen mit:  sudo apt purge docker-ce docker-ce-cli containerd.io"
+    # Ab 1.3.0 richtet postroot.sh eine Log-Rotation in /etc/docker/daemon.json
+    # ein. Sie wird BEWUSST nicht zurueckgenommen: sie schuetzt das
+    # Dateisystem, sie gehoert inzwischen zum System und nicht mehr zu diesem
+    # Plugin, und ein Plugin, das beim Deinstallieren eine Schutzeinstellung
+    # entfernt, ist gefaehrlicher als eines, das etwas stehen laesst. Wer sie
+    # loswerden will, bekommt gesagt wie.
+    if [ -f /etc/docker/daemon.json ]; then
+        echo "<INFO> Die Log-Rotation in /etc/docker/daemon.json bleibt bestehen - sie"
+        echo "<INFO> schuetzt die Speicherkarte und gehoert jetzt zum System."
+        echo "<INFO> Zuruecknehmen: den Abschnitt log-opts aus der Datei entfernen."
+    fi
 else
     echo "<INFO> docker ist nicht vorhanden - es ist nichts anzuhalten."
 fi
 
 # ---------- Geheimnis wegraeumen ----------
-# Die Sicherung enthaelt das Merkwort fuer den unangemeldeten Endpunkt. Sie
-# wird ueberschrieben, bevor sie geloescht wird: ein blosses rm laesst den
-# Inhalt auf der Karte stehen, bis der Block ueberschrieben wird.
-for DATEI in "$BK" "$CF"; do
+# Die Sicherung enthaelt das Merkwort fuer den unangemeldeten Endpunkt, die
+# Datei setup_token den Einrichtungstoken von Portainer. Beide werden
+# ueberschrieben, bevor sie geloescht werden: ein blosses rm laesst den Inhalt
+# auf der Karte stehen, bis der Block neu belegt wird.
+#
+# ZUR EINORDNUNG: auf einer Speicherkarte oder eMMC entscheidet der
+# Flash-Controller selbst, wohin geschrieben wird (Wear-Leveling) - der alte
+# Block kann physisch stehen bleiben. Das Ueberschreiben ist deshalb eine
+# Erschwernis, keine Garantie. Der Kommentar bis 1.2.4 hat mehr behauptet.
+for DATEI in "$BK" "$CF" "$BASE/config/plugins/$PFOLDER/setup_token"; do
     if [ -f "$DATEI" ]; then
         dd if=/dev/zero of="$DATEI" bs=1k count=8 conv=notrunc >/dev/null 2>&1
         rm -f "$DATEI" && echo "<OK> $DATEI ueberschrieben und entfernt."

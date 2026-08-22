@@ -1,0 +1,49 @@
+#!/bin/bash
+# Docker NG - Minutentakt.
+#
+# REPLACELBPBINDIR und REPLACELBPLOGDIR ersetzt der LoxBerry-Installer.
+#
+# ZEILENENDEN: DIESE DATEI IST LF, NICHT CRLF.
+# Der Kernel sucht sonst einen Interpreter namens "/bin/bash\r", findet ihn
+# nicht und bricht mit Rueckgabewert 126 und "bad interpreter" ab - der Takt
+# liefe dann nie. Und es genuegt NICHT, nur die Shebang-Zeile zu richten: mit
+# CRLF im Rest wird aus VERZ der Wert "…\r" und die Verzeichnispruefung
+# schlaegt fehl. Wer diese Datei bearbeitet, prueft die Zeilenenden hinterher
+# nach.
+#
+# WARUM HIER EINE FEHLERMELDUNG STEHT
+# Ein blosses
+#     cd REPLACELBPBINDIR && php dockerng_takt.php
+# faengt den Fehler zwar ab - aber lautlos. Bleibt der Platzhalter einmal
+# unersetzt oder fehlt der Ordner, laeuft der Cron monatelang ins Leere, und
+# in Loxone steht der Herzschlag still, ohne dass jemand den Grund findet.
+#
+# Die Meldung geht NICHT nach /tmp: das ist auf dem LoxBerry eine Ramdisk, der
+# Hinweis waere beim naechsten Neustart fort - und gerade dann sucht man ihn.
+# Sie geht in das Protokoll des Plugins, das die Oberflaeche im Reiter
+# Logdateien anzeigt.
+VERZ="REPLACELBPBINDIR"
+PROT="REPLACELBPLOGDIR/dockerng.log"
+
+if [ ! -d "$VERZ" ]; then
+    mkdir -p "$(dirname "$PROT")" 2>/dev/null
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Cron: Programmverzeichnis nicht gefunden ($VERZ) - Plugin neu installieren." >> "$PROT"
+    exit 1
+fi
+
+if ! command -v php >/dev/null 2>&1; then
+    mkdir -p "$(dirname "$PROT")" 2>/dev/null
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Cron: kein PHP gefunden - der Minutentakt laeuft nicht." >> "$PROT"
+    exit 1
+fi
+
+# Sperre gegen Parallellaeufe. Ein Durchlauf mit 'docker system df' oder einer
+# Abbildpruefung kann laenger dauern als eine Minute; ohne Sperre schreiben
+# dann zwei Laeufe dieselbe Zustandsdatei, und der langsamere ueberschreibt
+# den frischen Stand des schnelleren mit seinem eigenen von vorhin.
+# flock ist nicht blockierend: wer nicht drankommt, geht kommentarlos wieder.
+exec 9>"/tmp/dockerng_takt.lock" || exit 0
+flock -n 9 || exit 0
+
+cd "$VERZ" || exit 1
+php dockerng_takt.php

@@ -33,13 +33,41 @@ fi
 CF="$BASE/config/plugins/$PFOLDER/dockerng.json"
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 
-if [ -s "$CF" ]; then
-    if cp -p "$CF" "$BK" && chmod 600 "$BK"; then
+# Gesichert wird nur, was auch etwas wert ist.
+#
+# BERICHTIGT in 1.2.4: bis 1.2.3 stand hier allein [ -s "$CF" ], also "nicht
+# leer". Eine beschaedigte oder merkwortlose Datei erfuellt das - und
+# ueberschrieb per cp die zuvor GUTE Sicherung. Zusammen mit der zu engen
+# Selbstheilungspruefung in dk_config() war damit die letzte Kopie des
+# Merkworts fort. Geprueft wird jetzt dasselbe wie dort: gueltiges JSON mit
+# nichtleerem aktionstoken. Das Werkzeug dafuer steht ohnehin schon in
+# uninstall/uninstall.
+TAUGT=0
+if [ -s "$CF" ] && command -v php >/dev/null 2>&1; then
+    TAUGT=$(php -r '$d=@json_decode(@file_get_contents($argv[1]),true);
+        echo (is_array($d)&&isset($d["aktionstoken"])&&trim((string)$d["aktionstoken"])!=="")?"1":"0";' "$CF" 2>/dev/null)
+    [ "$TAUGT" = "1" ] || TAUGT=0
+fi
+
+if [ "$TAUGT" = "1" ]; then
+    # Erst daneben schreiben, dann umbenennen: ein Abbruch mittendrin darf die
+    # vorhandene Sicherung nicht halb ueberschrieben zuruecklassen.
+    if cp -p "$CF" "$BK.neu" && chmod 600 "$BK.neu" && mv -f "$BK.neu" "$BK"; then
         echo "<OK> Konfiguration gesichert nach $BK (Rechte 0600)."
     else
+        rm -f "$BK.neu"
         echo "<FAIL> Die Konfiguration liess sich nicht sichern. Nach dem Update"
         echo "<INFO> muss das Merkwort im Reiter Einbindung in Loxone abgelesen und"
         echo "<INFO> in den Adressen im Miniserver nachgezogen werden."
+    fi
+elif [ -s "$CF" ]; then
+    echo "<INFO> Die vorhandene Konfiguration enthaelt kein lesbares Merkwort."
+    if [ -f "$BK" ]; then
+        echo "<OK> Die bisherige Sicherung $BK bleibt unangetastet - sie ist die"
+        echo "<INFO> bessere Kopie und wird nach dem Update zurueckgespielt."
+    else
+        echo "<FAIL> Es gibt auch keine Sicherung. Nach dem Update entsteht ein NEUES"
+        echo "<INFO> Merkwort; alle Adressen im Miniserver muessen nachgezogen werden."
     fi
 else
     echo "<INFO> Keine Konfiguration vorhanden - offenbar eine Erstinstallation."
