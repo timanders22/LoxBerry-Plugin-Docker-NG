@@ -127,6 +127,23 @@ if (isset($_POST['activetab']) && in_array((string) $_POST['activetab'], $dk_rei
     $dk_tab = 'tab-' . (string) $_GET['form'];
 }
 
+/* ==================================================================
+ * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
+ * ==================================================================
+ *
+ * Stand der Kopf davor, war er beim Aufruf von header() schon
+ * geschrieben - "Cannot modify header information", und der Knopf
+ * "Einstellungen sichern" lieferte eine Seite mit angehaengtem JSON
+ * statt einer Datei.
+ *
+ * Am PHP-CLI ist das unsichtbar: header() ist dort wirkungslos und
+ * headers_sent() immer falsch. Und wer OHNE gueltiges Formularmerkmal
+ * misst, wird vom Wachposten abgewiesen, bevor der Handler anlaeuft.
+ * Beides hat den Fehler lange verdeckt.
+ *
+ * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
+ * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
+ * ================================================================== */
 /* ---------------- Loxone-Vorlage herunterladen ----------------
  * Eigenes Formular, damit der Download nicht am Speichern haengt.
  */
@@ -370,22 +387,6 @@ if (@is_readable('/etc/docker/daemon.json')) {
     $dk_rot['gesetzt'] = 0;
 }
 
-if (class_exists('LBWeb', false)) {
-    /* Hilfe in der eingestellten Sprache.
-     *
-     * Bis 1.1.0 stand hier fest 'help.html', und diese Datei war fest deutsch.
-     * Gemeldet von einem Mitleser, zutreffend.
-     *
-     * In 1.2.0 stand hier eine Auswahl zwischen help.html und help_en.html,
-     * weil ungeprueft war, welchen Pfad lbheader() absucht. Das ist am
-     * 10.08.2026 an libs/phplib/loxberry_web.php nachgeholt worden:
-     * LBWeb::gethelp() nimmt die genannte Datei aus templates/help/, leitet
-     * daraus <name>.ini ab und laesst readlanguage() die Sprachdateien in
-     * templates/lang/ suchen - also help_de.ini und help_en.ini. Die Auswahl
-     * hier ist damit ueberfluessig; die Sprache waehlt LoxBerry selbst.
-     */
-    LBWeb::lbheader('Docker NG', 'https://wiki.loxberry.de/', 'help.html');
-}
 
 /* ---------------- Einstellungen sichern ----------------
  *
@@ -432,6 +433,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dk_zurueck'])) {
             $dk_fehler[] = dk_t('EINST.SICH_SCHREIBFEHLER');
         }
     }
+}
+
+
+if (class_exists('LBWeb', false)) {
+    /* Hilfe in der eingestellten Sprache.
+     *
+     * Bis 1.1.0 stand hier fest 'help.html', und diese Datei war fest deutsch.
+     * Gemeldet von einem Mitleser, zutreffend.
+     *
+     * In 1.2.0 stand hier eine Auswahl zwischen help.html und help_en.html,
+     * weil ungeprueft war, welchen Pfad lbheader() absucht. Das ist am
+     * 10.08.2026 an libs/phplib/loxberry_web.php nachgeholt worden:
+     * LBWeb::gethelp() nimmt die genannte Datei aus templates/help/, leitet
+     * daraus <name>.ini ab und laesst readlanguage() die Sprachdateien in
+     * templates/lang/ suchen - also help_de.ini und help_en.ini. Die Auswahl
+     * hier ist damit ueberfluessig; die Sprache waehlt LoxBerry selbst.
+     */
+    LBWeb::lbheader('Docker NG', 'https://wiki.loxberry.de/', 'help.html');
 }
 
 ?>
