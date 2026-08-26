@@ -386,6 +386,54 @@ if (class_exists('LBWeb', false)) {
      */
     LBWeb::lbheader('Docker NG', 'https://wiki.loxberry.de/', 'help.html');
 }
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dk_sichern'])) {
+    $dk_js = json_encode(dk_config(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($dk_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="docker_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $dk_js;
+        exit;
+    }
+    $dk_fehler[] = dk_t('EINST.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
+ * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
+ * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dk_zurueck'])) {
+    if (!isset($_FILES['dk_sicherung']) || !is_array($_FILES['dk_sicherung'])
+        || !isset($_FILES['dk_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['dk_sicherung']['tmp_name'])) {
+        $dk_fehler[] = dk_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['dk_sicherung']['size'] > 262144) {
+        $dk_fehler[] = dk_t('EINST.SICH_ZU_GROSS');
+    } else {
+        list($dk_neu, $dk_mangel, $dk_n) = dk_sicherung_lesen(
+            (string) @file_get_contents($_FILES['dk_sicherung']['tmp_name']));
+        if ($dk_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
+             * nichts. */
+            $dk_fehler[] = dk_t('EINST.SICH_ABGELEHNT') . ' '
+                            . implode(' ', $dk_mangel);
+        } elseif (dk_config_schreiben($dk_neu)) {
+            $dk_meldungen[] = sprintf(dk_t('EINST.SICH_UEBERNOMMEN'), $dk_n);
+        } else {
+            $dk_fehler[] = dk_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 ?>
 <style>
 .sm-wrap { max-width: 980px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
@@ -696,6 +744,27 @@ if ($dk_fehlende) { ?>
 <?php } else { ?>
 <div class="sm-hinweis"><?= dk_t('EINST.ROTATION_UNKLAR') ?></div>
 <?php } ?>
+
+<h2><?= dk_t('EINST.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= dk_t('EINST.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= dk_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="dk_sichern" value="1"><?= dk_t('EINST.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
+    <input data-role="none" type="file" name="dk_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="dk_zurueck" value="1"><?= dk_t('EINST.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div>
 
 <!-- ======================= MQTT ======================= -->

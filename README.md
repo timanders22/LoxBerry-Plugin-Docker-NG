@@ -7,6 +7,51 @@ Containerzustand an Loxone.
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
 
+## Stand: vorbereitet, nicht veröffentlicht
+
+`plugin.cfg` steht auf **1.3.0**, `release.cfg` und `prerelease.cfg` stehen
+weiter auf **1.2.3**. Das ist der vorbereitete Zustand und kein Versäumnis:
+die beiden Adressdateien werden erst **nach** dem Anlegen des Tags
+hochgesetzt, sonst sieht jede fremde Anlage eine Fassung, die es als Tag nicht
+gibt. Der Ablauf steht in `REGELN_4`; das Werkzeug dafür ist
+`Werkzeuge/fassung_setzen.py … --auch-release`.
+
+Der Tag heißt **`v1.3.0`**. Der Vorsatz `ng-` galt bis 1.2.2 und ist beendet.
+
+### Was am Gerät noch zu messen ist
+
+Gebaut und geprüft wurde ohne laufenden Docker. Fünf Aussagen sind deshalb
+belegt, aber nicht am Gerät nachgemessen — für jede ist eine Rückfallebene
+eingebaut, keine bricht bei Abweichung etwas:
+
+1. **Erhöht ein `docker restart` von Hand den `RestartCount`?** Die Stelle im
+   moby-Quelltext spricht dagegen, im Netz steht das Gegenteil. Falls doch,
+   löst der Knopf *Portainer neu starten* bei drei Betätigungen innerhalb einer
+   Stunde die eigene Schleifenmeldung aus. Deshalb ist die Grenze einstellbar
+   und ihre Vorgabe 3, nicht 1.
+2. **Kennt die installierte Docker-Fassung `{{.HealthStatus}}`?** Wenn nicht,
+   greift die Textauswertung des Zustands.
+3. **Kennt die installierte Portainer-Fassung `--setup-token`?** Wenn nicht,
+   legt `postroot.sh` den Container ohne den Schalter erneut an und benutzt den
+   alten Weg über das Containerprotokoll — und sagt das im
+   Installationsprotokoll.
+4. **Nimmt Loxone Config die erzeugte Importdatei an?** Sie ist wohlgeformt und
+   folgt dem geprüften Nachbau aus APC-UPS, ist aber nicht importiert worden.
+5. **Wie lange braucht `docker system df` auf diesem Pi?** Deshalb läuft es nur
+   aus dem Minutentakt und dort höchstens alle 15 Minuten.
+
+Der erste Handgriff nach der Installation bleibt: **einmal neu starten** (sonst
+hat der Webserver die Gruppe `docker` nicht), dann im Reiter *Test* den Knopf
+*Minutentakt jetzt einmal ausführen* drücken und die Zeilen darüber ansehen.
+
+### Bewusst nicht umgesetzt
+
+Das Protokoll bleibt eine schlichte Textdatei statt `LBLog::newLog()` mit
+`LBWeb::loglist_html()`. Der Umbau brächte den Log-Manager und einen wirksamen
+Loglevel-Wähler; er ist nicht gemacht, weil sich sein Nutzen hier nicht messen
+ließ. `CUSTOM_LOGLEVELS` bleibt konsequenterweise ungesetzt — ein Wähler ohne
+Wirkung wäre schlechter als keiner.
+
 ## Neu in 1.3.0 — vom Momentbild zur Überwachung
 
 Bis 1.2.4 lief jede Zeile Code dieses Plugins nur dann, wenn ein Mensch die
