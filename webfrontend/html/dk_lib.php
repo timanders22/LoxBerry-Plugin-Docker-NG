@@ -1675,6 +1675,7 @@ function dk_log($text)
     $p = dk_paths();
     if (!@is_dir($p['logdir'])) { @mkdir($p['logdir'], 0775, true); }
     // Rotation, damit eine Dauerstoerung die Ramdisk nicht vollschreibt.
+    clearstatcache(true, $p['log']);
     if (@is_file($p['log']) && @filesize($p['log']) > 262144) {
         $rest = array_slice(@file($p['log'], FILE_IGNORE_NEW_LINES) ?: array(), -300);
         @file_put_contents($p['log'], implode("\n", $rest) . "\n");
