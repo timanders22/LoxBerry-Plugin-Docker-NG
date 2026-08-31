@@ -803,8 +803,24 @@ if ($dk_fehlende) { ?>
 <div class="sm-hinweis"><?= sprintf(dk_t('MQTT.GATEWAY_OK'), (int) $dk_mqttlage['udpport']) ?></div>
 <?php } ?>
 
+<!-- DREI AUSGAENGE, nicht einer. Bis 1.3.3 ging der Pflichtsatz fuer
+     Gateway V1 unbedingt hinaus - auch an jede Anlage mit Fassung 2, wo
+     nichts einzutragen ist und der LoxBerry-Kern das Eingabefeld abschaltet.
+     Ist die Fassung nicht lesbar, stehen BEIDE Faelle da: einen von beiden zu
+     behaupten waere fuer die Haelfte der Anlagen falsch. -->
 <div class="sm-step"><b><?= dk_e(dk_t('MQTT.S1')) ?></b><br>
-<?= sprintf(dk_t('MQTT.S1_TEXT'), dk_e($dk_cfg['mqtt_praefix'])) ?></div>
+<?= sprintf(dk_t('MQTT.S1_EINLEITUNG'), dk_e($dk_cfg['mqtt_praefix'])) ?>
+<?php $dk_gwf = (int) $dk_mqttlage['fassung']; ?>
+<?php if ($dk_gwf >= 2) { ?>
+<div class="sm-hinweis"><?= dk_t('MQTT.S1_V2') ?></div>
+<?php } elseif ($dk_gwf === 1) { ?>
+<div class="sm-warnung"><?= dk_t('MQTT.S1_V1') ?></div>
+<?php } else { ?>
+<div class="sm-warnung"><?= dk_t('MQTT.S1_V1') ?></div>
+<div class="sm-hinweis"><?= dk_t('MQTT.S1_V2') ?></div>
+<div class="sm-hilfe"><?= dk_t('MQTT.S1_UNBEKANNT') ?></div>
+<?php } ?>
+</div>
 
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">

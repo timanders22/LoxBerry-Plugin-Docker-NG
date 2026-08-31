@@ -932,7 +932,12 @@ function dk_groesse_in_bytes($text)
  */
 function dk_mqtt_lage()
 {
-    $aus = array('gefunden' => false, 'udpport' => 0, 'autostart' => false);
+    /* 'fassung' seit 1.3.4. Sie entscheidet, was der Anwender ueberhaupt
+     * tun muss: unter V1 jedes Thema von Hand eintragen, ab V2 erscheint
+     * die Themengruppe von selbst in den Subscriptions. 0 heisst NICHT
+     * feststellbar - und das ist etwas anderes als Fassung 1. */
+    $aus = array('gefunden' => false, 'udpport' => 0, 'autostart' => false,
+                 'fassung' => 0);
     $f = dk_paths()['home'] . '/config/system/general.json';
     if (!@is_file($f)) { return $aus; }
     $d = json_decode((string) @file_get_contents($f), true);
@@ -942,6 +947,8 @@ function dk_mqtt_lage()
     // 'Gatewayautostart' ist der richtige Schluessel. 'Brokerhost' ist immer
     // gesetzt und beantwortet die Frage nicht.
     $aus['autostart'] = !empty($d['Mqtt']['Gatewayautostart']);
+    $aus['fassung'] = isset($d['Mqtt']['Gatewayversion'])
+        ? (int) $d['Mqtt']['Gatewayversion'] : 0;
     return $aus;
 }
 
