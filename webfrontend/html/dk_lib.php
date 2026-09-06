@@ -1205,11 +1205,51 @@ function dk_updates_pruefen()
  * Laeuft aus cron/cron.01min ueber bin/dockerng_takt.php. Er ist die einzige
  * Stelle, die schreibt - Oberflaeche und Endpunkt lesen.
  * ================================================================== */
+/**
+ * Wann wurde der Rechner gestartet? Unixzeit, oder 0.
+ *
+ * Aus /proc/uptime, weil das ohne Zusatzrecht lesbar ist. Fehlt die Datei -
+ * kein Linux, oder ein sehr enger Container -, gibt es 0, und der Aufrufer
+ * behandelt das wie "unbekannt".
+ */
+function dk_startzeit()
+{
+    if (!@is_readable('/proc/uptime')) { return 0; }
+    $roh = trim((string) @file_get_contents('/proc/uptime'));
+    if ($roh === '') { return 0; }
+    $teile = explode(' ', $roh);
+    $sek = (float) $teile[0];
+    return $sek > 0 ? (int) (time() - $sek) : 0;
+}
+
 function dk_takt()
 {
     $cfg = dk_config();
     $alt = dk_zustandsdatei();
     $jetzt = time();
+
+    /* ---- Eine Zeile je Systemstart ----
+     *
+     * Am Geraet gemessen (06.09.2026): sieben Stunden nach einem Neustart war
+     * log/plugins/dockerng/ leer - bei rund 440 Taktlaeufen. Das ist
+     * folgerichtig, denn protokolliert wird nur bei WECHSEL des Befundes und
+     * log/ liegt auf einer Ramdisk. Im Ergebnis stand der Reiter Logdateien
+     * aber wieder leer da - genau der Zustand, den 1.1.0 behoben hat, und ein
+     * leerer Reiter sieht aus wie ein Bedienfehler des Anwenders.
+     *
+     * Erkannt wird der erste Lauf daran, dass der Stand aus der Zustandsdatei
+     * AELTER ist als der Systemstart. Die Zustandsdatei liegt unter data/ und
+     * uebersteht den Neustart, das Protokoll unter log/ nicht - genau diese
+     * Ungleichzeitigkeit macht die Erkennung moeglich, ohne etwas zusaetzlich
+     * zu speichern.
+     */
+    $start = dk_startzeit();
+    if ($start > 0 && (!isset($alt['zeit']) || (int) $alt['zeit'] < $start)) {
+        dk_log(sprintf(dk_t('LOG.TAKT_AUFGENOMMEN'),
+            date('Y-m-d H:i:s', $start),
+            isset($alt['zaehler']) ? (int) $alt['zaehler'] : 0));
+    }
+
     $neu = array(
         'zeit'    => $jetzt,
         // Umlaufend bei 1000: Loxone bekommt einen Analogwert, der sich bei
@@ -1411,6 +1451,84 @@ function dk_zustandsdatei_schreiben_hilf($pfad, $daten)
     $p = dk_paths();
     if (!@is_dir($p['datadir'])) { @mkdir($p['datadir'], 0755, true); }
     return dk_json_schreiben($pfad, $daten, 0644);
+}
+
+/* ==================================================================
+ * Einmalmeldung - der Traeger fuer POST-Redirect-GET
+ *
+ * WARUM ES DAS BRAUCHT
+ *
+ * Bis 1.3.4 endete jeder Handler damit, dass die Seite unmittelbar nach dem
+ * POST gerendert wurde. Ein Neuladen oder ein zweiter Klick schickte dieselbe
+ * Aktion noch einmal - und bei "Portainer neu starten" ist das kein
+ * Schoenheitsfehler: der Container geht ein zweites Mal weg.
+ *
+ * Am Geraet belegt (06.09.2026): EIN beabsichtigter Druck ergab ZWEI
+ * Neustarts, zehn Sekunden auseinander. Der Handler wartet nach dem Neustart
+ * bis zu zwanzig Sekunden auf einen Setup-Token; in dieser Zeit wirkt die
+ * Seite haengend, und ein zweiter Klick liegt nahe.
+ *
+ * WARUM EINE DATEI UND KEINE SITZUNG
+ *
+ * Nach einer Umleitung ist das Ergebnis des Handlers fort - Meldung,
+ * Setup-Token, Ergebnis des Taktlaufs. Eine PHP-Sitzung waere der uebliche
+ * Weg, bringt aber Sitzungsdateien, Sperren und eine Abhaengigkeit mit, die
+ * kein anderes Plugin dieses Hauses hat. Die Zustandsablage unter data/ gibt
+ * es dagegen schon.
+ *
+ * Die Datei wird beim Lesen GELOESCHT. Sie traegt gelegentlich den
+ * Einrichtungstoken von Portainer, deshalb 0600 - anders als die uebrigen
+ * Nebendateien unter data/.
+ * ================================================================== */
+function dk_flash_datei()
+{
+    return dk_paths()['datadir'] . '/meldung.json';
+}
+
+function dk_flash_schreiben($daten)
+{
+    $p = dk_paths();
+    if (!@is_dir($p['datadir'])) { @mkdir($p['datadir'], 0755, true); }
+    return dk_json_schreiben(dk_flash_datei(), $daten, 0600);
+}
+
+/** Liest die Einmalmeldung und entfernt sie. Zweimal lesen ergibt nichts. */
+function dk_flash_lesen()
+{
+    $f = dk_flash_datei();
+    if (!@is_file($f)) { return array(); }
+    $d = dk_json_lesen($f);
+    @unlink($f);
+    /* Eine liegengebliebene Meldung waere schlimmer als keine: sie erschiene
+     * beim naechsten Oeffnen der Seite als Antwort auf eine Handlung, die
+     * niemand ausgeloest hat. Alles aelter als zwei Minuten wird verworfen. */
+    if (!isset($d['zeit']) || (time() - (int) $d['zeit']) > 120) { return array(); }
+    return $d;
+}
+
+/**
+ * Handler abschliessen: Ergebnis hinterlegen und auf die Seite umleiten.
+ *
+ * Danach steht im Browser ein GET. Neuladen wiederholt nichts mehr, und die
+ * Rueckfrage "Formular erneut senden?" entfaellt.
+ *
+ * 303 ist die richtige Nummer: sie sagt ausdruecklich "hole das Ergebnis mit
+ * GET ab". 302 ueberlassen manche Browser sich selbst und wiederholen den
+ * POST.
+ *
+ * Die Umleitung ist RELATIV auf index.php und traegt nur den Reiternamen aus
+ * der eigenen Positivliste - nichts, was ein Aufrufer beeinflussen koennte.
+ */
+function dk_weiter($reiter, $meldung = array(), $anhang = '')
+{
+    $erlaubt = array('settings', 'mqtt', 'loxone', 'test', 'log');
+    if (!in_array($reiter, $erlaubt, true)) { $reiter = 'settings'; }
+    if ($meldung) {
+        $meldung['zeit'] = time();
+        dk_flash_schreiben($meldung);
+    }
+    header('Location: index.php?form=' . $reiter . $anhang, true, 303);
+    exit;
 }
 
 /**

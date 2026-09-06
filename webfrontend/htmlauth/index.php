@@ -109,10 +109,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             . 'lag lange offen, waehrend das Merkwort neu gewuerfelt wurde.');
     }
     if (!$dk_csrf_ok) {
-        $dk_behalten = isset($_POST['activetab']) ? $_POST['activetab'] : null;
-        $_POST = array();
-        if ($dk_behalten !== null) { $_POST['activetab'] = $dk_behalten; }
+        /* Auch der abgewiesene Fall endet mit einer Umleitung - sonst
+         * wiederholt ein Neuladen den abgewiesenen POST, und der Anwender
+         * bekommt dieselbe Meldung noch einmal, ohne etwas getan zu haben.
+         * Es wurde nichts geaendert; die Umleitung kostet nur die Meldung. */
+        $dk_woher = ((string) ($_POST['activetab'] ?? '')) ;
+        $dk_woher = (strpos($dk_woher, 'tab-') === 0) ? substr($dk_woher, 4) : 'settings';
+        dk_weiter($dk_woher, array('fehler' => $dk_fehler));
     }
+}
+
+/* ---------------- Ergebnis eines vorangegangenen Handlers ----------------
+ *
+ * Jeder Handler endet mit dk_weiter(): er legt sein Ergebnis als
+ * Einmalmeldung ab und leitet auf ein GET um. Hier wird sie eingesammelt und
+ * dabei geloescht.
+ *
+ * Damit wiederholt ein Neuladen keine Aktion mehr. Am Geraet belegt
+ * (06.09.2026): EIN Druck auf "Portainer neu starten" ergab bis 1.3.4 ZWEI
+ * Neustarts, weil der Handler bis zu zwanzig Sekunden auf einen Setup-Token
+ * wartet und die Seite in dieser Zeit haengend wirkt.
+ */
+/* NUR beim GET lesen - das ist keine Feinheit, sondern die Bedingung dafuer,
+ * dass die Sache traegt.
+ *
+ * Die Einmalmeldung ist das Ergebnis der VORIGEN Anfrage. Beim POST hat sie
+ * nichts zu suchen: $dk_fehler ist zugleich der Sammler, mit dem die Handler
+ * ihre Eingaben pruefen ("if (!$dk_fehler) { speichern }"). Ein Fehlertext aus
+ * einem vorangegangenen, abgewiesenen POST landete darin und verhinderte das
+ * naechste Speichern - ohne dass irgendwo etwas davon stand.
+ *
+ * Gefunden beim Bau von 1.3.5 durch Pruefung-DockerNG-1.3.0/csrf_probe.py:
+ * Fall 1 und 2 (abgewiesen) hinterliessen die Meldung, Fall 3 (gueltig) wirkte
+ * daraufhin nicht mehr. Mein erster Gedanke war, der Pruefstand messe falsch -
+ * er hatte recht.
+ */
+$dk_flash = ($_SERVER['REQUEST_METHOD'] === 'GET') ? dk_flash_lesen() : array();
+if ($dk_flash) {
+    if (!empty($dk_flash['meldung'])) { $dk_meldung = (string) $dk_flash['meldung']; }
+    if (!empty($dk_flash['fehler']) && is_array($dk_flash['fehler'])) {
+        foreach ($dk_flash['fehler'] as $dk_f1) { $dk_fehler[] = (string) $dk_f1; }
+    }
+    if (!empty($dk_flash['setup']))  { $dk_setup  = (string) $dk_flash['setup']; }
+    if (!empty($dk_flash['rohlog'])) { $dk_rohlog = (string) $dk_flash['rohlog']; }
+}
+$dk_takt_ergebnis = (!empty($dk_flash['takt']) && is_array($dk_flash['takt']))
+                    ? $dk_flash['takt'] : null;
+
+/* Das Containerprotokoll kommt als Abfrage ueber die Adresse zurueck. */
+$dk_clog  = '';
+$dk_cname = '';
+if (isset($_GET['clog']) && is_string($_GET['clog'])
+    && preg_match('/^[A-Za-z0-9_.\-]{1,64}$/', $_GET['clog'])) {
+    $dk_cname = (string) $_GET['clog'];
+    $dk_clog  = dk_container_log($dk_cname, 200);
+    if (trim($dk_clog) === '') { $dk_clog = dk_t('TEST.CLOG_LEER'); }
 }
 
 /* Die Reiterliste steht GENAU EINMAL - ausgeschrieben, nicht gerechnet.
@@ -244,6 +295,7 @@ if (($_POST['speichern'] ?? '') === '1') {
             $dk_fehler[] = dk_t('FEHLER.SCHREIBEN');
         }
     }
+    dk_weiter('settings', array('meldung' => $dk_meldung, 'fehler' => $dk_fehler));
 }
 
 /* ---------------- Speichern: MQTT ----------------
@@ -269,7 +321,7 @@ if (($_POST['speichern_mqtt'] ?? '') === '1') {
             $dk_fehler[] = dk_t('FEHLER.SCHREIBEN');
         }
     }
-    $dk_tab = 'tab-mqtt';
+    dk_weiter('mqtt', array('meldung' => $dk_meldung, 'fehler' => $dk_fehler));
 }
 
 /* ---------------- Minutentakt von Hand ausloesen ----------------
@@ -277,27 +329,36 @@ if (($_POST['speichern_mqtt'] ?? '') === '1') {
  * Hand starten und das Ergebnis ansehen. Genau dafuer ist dieser Knopf da -
  * er ersetzt den Gang auf die Kommandozeile.
  */
-$dk_takt_ergebnis = null;
 if (isset($_POST['takt_jetzt'])) {
-    $dk_takt_ergebnis = dk_takt();
+    $dk_e = dk_takt();
     dk_zustandsdatei(true);
-    $dk_meldung = dk_t('MELDUNG.TAKT_GELAUFEN');
-    $dk_tab = 'tab-test';
+    dk_weiter('test', array(
+        'meldung' => dk_t('MELDUNG.TAKT_GELAUFEN'),
+        'takt'    => array((int) $dk_e['zaehler'], (int) $dk_e['schleife'], (int) $dk_e['mqtt']),
+    ));
 }
 
-/* ---------------- Protokoll eines Containers ---------------- */
-$dk_clog = '';
-$dk_cname = '';
+/* ---------------- Protokoll eines Containers ----------------
+ * Eine Abfrage, keine Aenderung - deshalb wandert der Containername in die
+ * Adresse und wird beim GET ausgewertet. So gilt fuer JEDEN Handler dieselbe
+ * Regel: er endet mit einer Umleitung. Zwei Verfahren nebeneinander waeren
+ * eines zu viel, und die Ausnahme waere genau die, die man spaeter vergisst.
+ */
 if (isset($_POST['containerlog'])) {
-    $dk_cname = trim((string) ($_POST['clog_name'] ?? ''));
-    if (!preg_match('/^[A-Za-z0-9_.\-]{1,64}$/', $dk_cname)) {
-        $dk_fehler[] = dk_t('FEHLER.NAME');
-        $dk_cname = '';
-    } else {
-        $dk_clog = dk_container_log($dk_cname, 200);
-        if (trim($dk_clog) === '') { $dk_clog = dk_t('TEST.CLOG_LEER'); }
+    $dk_n = trim((string) ($_POST['clog_name'] ?? ''));
+    if (!preg_match('/^[A-Za-z0-9_.\-]{1,64}$/', $dk_n)) {
+        dk_weiter('test', array('fehler' => array(dk_t('FEHLER.NAME'))));
     }
-    $dk_tab = 'tab-test';
+    // rawurlencode, obwohl das Muster oben nur unbedenkliche Zeichen zulaesst:
+    // die Maskierung gehoert an die Stelle, an der die Adresse entsteht, nicht
+    // an die Pruefung davor.
+    dk_weiter('test', array(), '&clog=' . rawurlencode($dk_n));
+}
+
+/* ---------------- Endpunktprobe neu messen ---------------- */
+if (isset($_POST['ep_neu'])) {
+    dk_endpunkt_probe(true);
+    dk_weiter('test', array('meldung' => dk_t('MELDUNG.EP_GEMESSEN')));
 }
 
 /* ---------------- Logdatei leeren ---------------- */
@@ -305,11 +366,9 @@ if (isset($_POST['log_leeren'])) {
     // Rueckgabewert auswerten. Bis 1.2.3 stand "Das Protokoll wurde geleert."
     // auch dann da, wenn das Schreiben scheiterte.
     if (dk_log_leeren()) {
-        $dk_meldung = dk_t('LOG.GELEERT');
-    } else {
-        $dk_fehler[] = dk_t('FEHLER.LOG_LEEREN');
+        dk_weiter('log', array('meldung' => dk_t('LOG.GELEERT')));
     }
-    $dk_tab = 'tab-log';
+    dk_weiter('log', array('fehler' => array(dk_t('FEHLER.LOG_LEEREN'))));
 }
 
 /* ---------------- Portainer: Setup-Token ----------------
@@ -321,24 +380,32 @@ if (isset($_POST['log_leeren'])) {
  * Neustart geklappt hat.
  */
 if (isset($_POST['tokenzeigen']) || isset($_POST['portainerneu'])) {
+    $dk_m = array();
     if (isset($_POST['portainerneu'])) {
         list($dk_neustart_ok, $dk_setup) = dk_portainer_neustart();
         if (!$dk_neustart_ok) {
-            $dk_fehler[] = dk_t('FEHLER.NEUSTART');
+            $dk_m['fehler'] = array(dk_t('FEHLER.NEUSTART'));
         } elseif ($dk_setup !== '') {
-            $dk_meldung = dk_t('MELDUNG.NEUSTART_OK');
+            $dk_m['meldung'] = dk_t('MELDUNG.NEUSTART_OK');
+            $dk_m['setup']   = $dk_setup;
         } else {
             // Neustart hat geklappt, nur kein neuer Token - der Regelfall bei
             // einem bereits eingerichteten Portainer. Das ist kein Fehler.
-            $dk_meldung = dk_t('MELDUNG.NEUSTART_OHNE_TOKEN');
+            $dk_m['meldung'] = dk_t('MELDUNG.NEUSTART_OHNE_TOKEN');
         }
     } else {
         $dk_setup = dk_setup_token();
         if ($dk_setup === '') {
-            $dk_rohlog = dk_portainer_log(40);
-            $dk_fehler[] = dk_t('FEHLER.KEIN_SETUPTOKEN');
+            $dk_m['rohlog'] = dk_portainer_log(40);
+            $dk_m['fehler'] = array(dk_t('FEHLER.KEIN_SETUPTOKEN'));
+        } else {
+            $dk_m['setup'] = $dk_setup;
         }
     }
+    /* Der Reiter, aus dem der Knopf kam - beide Reiter tragen denselben
+     * Handler, und der Anwender soll die Antwort dort sehen, wo er war. */
+    $dk_woher = ((string) ($_POST['activetab'] ?? '') === 'tab-test') ? 'test' : 'settings';
+    dk_weiter($dk_woher, $dk_m);
 }
 
 $dk_da    = dk_bin();
@@ -404,7 +471,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dk_sichern'])) {
         echo $dk_js;
         exit;
     }
-    $dk_fehler[] = dk_t('EINST.SICH_SCHREIBFEHLER');
+    dk_weiter('settings', array('fehler' => array(dk_t('EINST.SICH_SCHREIBFEHLER'))));
 }
 
 /* ---------------- Einstellungen zurueckspielen ----------------
@@ -413,26 +480,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dk_sichern'])) {
  * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
  * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dk_zurueck'])) {
+    $dk_m = array();
     if (!isset($_FILES['dk_sicherung']) || !is_array($_FILES['dk_sicherung'])
         || !isset($_FILES['dk_sicherung']['tmp_name'])
         || !@is_uploaded_file($_FILES['dk_sicherung']['tmp_name'])) {
-        $dk_fehler[] = dk_t('EINST.SICH_KEINE_DATEI');
+        $dk_m['fehler'] = array(dk_t('EINST.SICH_KEINE_DATEI'));
     } elseif ((int) $_FILES['dk_sicherung']['size'] > 262144) {
-        $dk_fehler[] = dk_t('EINST.SICH_ZU_GROSS');
+        $dk_m['fehler'] = array(dk_t('EINST.SICH_ZU_GROSS'));
     } else {
         list($dk_neu, $dk_mangel, $dk_n) = dk_sicherung_lesen(
             (string) @file_get_contents($_FILES['dk_sicherung']['tmp_name']));
         if ($dk_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
              * nichts. */
-            $dk_fehler[] = dk_t('EINST.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $dk_mangel);
+            $dk_m['fehler'] = array(dk_t('EINST.SICH_ABGELEHNT') . ' '
+                                    . implode(' ', $dk_mangel));
         } elseif (dk_config_schreiben($dk_neu)) {
-            $dk_meldungen[] = sprintf(dk_t('EINST.SICH_UEBERNOMMEN'), $dk_n);
+            /* BERICHTIGT in 1.3.5: hier stand $dk_meldungen[] - mit n.
+             * Die Variable gab es sonst nirgends, gelesen wurde sie nie.
+             * Ein erfolgreiches Zurueckspielen lief damit voellig stumm ab:
+             * die Konfiguration war geschrieben, und die Seite sagte nichts.
+             * Genau das, wogegen dieses Plugin sonst antritt. PHP meldet den
+             * Fall nicht - das Anhaengen an eine unbekannte Variable legt sie
+             * stillschweigend an. Gefunden beim Umbau auf die Umleitung,
+             * nicht von einem Werkzeug. */
+            $dk_m['meldung'] = sprintf(dk_t('EINST.SICH_UEBERNOMMEN'), $dk_n);
         } else {
-            $dk_fehler[] = dk_t('EINST.SICH_SCHREIBFEHLER');
+            $dk_m['fehler'] = array(dk_t('EINST.SICH_SCHREIBFEHLER'));
         }
     }
+    dk_weiter('settings', $dk_m);
 }
 
 
@@ -1128,7 +1205,9 @@ libxml_use_internal_errors($dk_xmlalt);
  * einer. Jetzt ein echter Aufruf mit drei Ausgaengen, gebremst auf 300
  * Sekunden. Der Knopf weiter unten misst neu.
  */
-$dk_ep_probe = dk_endpunkt_probe(isset($_POST['ep_neu']));
+/* Frisch gemessen wird im Handler oben, der danach umleitet - hier wird
+ * nur noch der gemerkte Stand gelesen. */
+$dk_ep_probe = dk_endpunkt_probe();
 ?>
 <tr><td><?= dk_e(dk_t('TEST.F_ENDPUNKT')) ?></td>
 <?php if ((int) $dk_ep_probe['stand'] === 1) { ?>
@@ -1251,8 +1330,8 @@ if (preg_match_all('/<form\s/', $dk_quelle, $dk_fy, PREG_OFFSET_CAPTURE)) {
 <p class="sm-hilfe"><?= dk_t('TEST.H_AKTION') ?></p>
 <?php if ($dk_takt_ergebnis !== null) { ?>
 <div class="sm-hinweis"><?= dk_e(sprintf(dk_t('TEST.TAKT_ERGEBNIS'),
-	(int) $dk_takt_ergebnis['zaehler'], (int) $dk_takt_ergebnis['schleife'],
-	(int) $dk_takt_ergebnis['mqtt'])) ?></div>
+	(int) $dk_takt_ergebnis[0], (int) $dk_takt_ergebnis[1],
+	(int) $dk_takt_ergebnis[2])) ?></div>
 <?php } ?>
 <div class="sm-knopfreihe">
 	<?php /* Die Hausregel verlangt, jeden Cron-Dienst nach der Installation

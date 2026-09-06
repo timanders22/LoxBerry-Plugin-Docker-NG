@@ -3,46 +3,109 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.0 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.5 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
 
-## Stand: vorbereitet, nicht veröffentlicht
+## Neu in 1.3.5 — drei Befunde vom laufenden Gerät
 
-`plugin.cfg` steht auf **1.3.0**, `release.cfg` und `prerelease.cfg` stehen
-weiter auf **1.2.3**. Das ist der vorbereitete Zustand und kein Versäumnis:
-die beiden Adressdateien werden erst **nach** dem Anlegen des Tags
-hochgesetzt, sonst sieht jede fremde Anlage eine Fassung, die es als Tag nicht
-gibt. Der Ablauf steht in `REGELN_4`; das Werkzeug dafür ist
-`Werkzeuge/fassung_setzen.py … --auch-release`.
+Am 06.09.2026 ist 1.3.4 zum ersten Mal am laufenden LoxBerry nachgemessen
+worden (Raspberry Pi 4, Debian 13, Docker 29.8.0, Portainer 2.39.5). Das
+Ergebnis steht unter *Am Gerät gemessen*; drei Befunde daraus sind hier
+behoben, ein vierter kam beim Umbau dazu.
 
-Der Tag heißt **`v1.3.0`**. Der Vorsatz `ng-` galt bis 1.2.2 und ist beendet.
+### Ein Druck, zwei Neustarts — jetzt POST-Redirect-GET
 
-### Was am Gerät noch zu messen ist
+Der Knopf *Portainer neu starten und Token holen* erzeugte bei **einem**
+beabsichtigten Druck **zwei** Neustarts, zehn Sekunden auseinander (belegt im
+Protokoll: 02:24:50 und 02:25:00). Ursache: der Handler wartet nach dem
+Neustart bis zu zwanzig Sekunden auf einen Setup-Token; in dieser Zeit wirkt
+die Seite hängend, und ein zweiter Klick oder ein Neuladen schickt denselben
+POST noch einmal.
 
-Gebaut und geprüft wurde ohne laufenden Docker. Fünf Aussagen sind deshalb
-belegt, aber nicht am Gerät nachgemessen — für jede ist eine Rückfallebene
-eingebaut, keine bricht bei Abweichung etwas:
+Bis 1.3.4 endete jeder Handler damit, dass die Seite unmittelbar nach dem POST
+gerendert wurde. Jetzt endet **jeder** Handler mit einer Umleitung (HTTP 303)
+auf ein GET. Neuladen wiederholt nichts mehr, und die Rückfrage „Formular
+erneut senden?" entfällt.
 
-1. **Erhöht ein `docker restart` von Hand den `RestartCount`?** Die Stelle im
-   moby-Quelltext spricht dagegen, im Netz steht das Gegenteil. Falls doch,
-   löst der Knopf *Portainer neu starten* bei drei Betätigungen innerhalb einer
-   Stunde die eigene Schleifenmeldung aus. Deshalb ist die Grenze einstellbar
-   und ihre Vorgabe 3, nicht 1.
-2. **Kennt die installierte Docker-Fassung `{{.HealthStatus}}`?** Wenn nicht,
-   greift die Textauswertung des Zustands.
-3. **Kennt die installierte Portainer-Fassung `--setup-token`?** Wenn nicht,
-   legt `postroot.sh` den Container ohne den Schalter erneut an und benutzt den
-   alten Weg über das Containerprotokoll — und sagt das im
-   Installationsprotokoll.
-4. **Nimmt Loxone Config die erzeugte Importdatei an?** Sie ist wohlgeformt und
-   folgt dem geprüften Nachbau aus APC-UPS, ist aber nicht importiert worden.
-5. **Wie lange braucht `docker system df` auf diesem Pi?** Deshalb läuft es nur
-   aus dem Minutentakt und dort höchstens alle 15 Minuten.
+Damit das Ergebnis die Umleitung übersteht — Meldung, Setup-Token, Ergebnis des
+Taktlaufs —, gibt es eine **Einmalmeldung** unter
+`data/plugins/<ordner>/meldung.json`: der Handler legt sie ab, das folgende GET
+liest sie und **löscht sie dabei**. Keine PHP-Sitzung: die brächte
+Sitzungsdateien, Sperren und eine Abhängigkeit, die kein anderes Plugin dieses
+Hauses hat — die Zustandsablage unter `data/` gibt es dagegen schon. Die Datei
+trägt gelegentlich den Einrichtungstoken und liegt deshalb auf 0600; was älter
+als zwei Minuten ist, wird verworfen, damit keine liegengebliebene Meldung als
+Antwort auf eine Handlung erscheint, die niemand ausgelöst hat.
 
-Der erste Handgriff nach der Installation bleibt: **einmal neu starten** (sonst
-hat der Webserver die Gruppe `docker` nicht), dann im Reiter *Test* den Knopf
-*Minutentakt jetzt einmal ausführen* drücken und die Zeilen darüber ansehen.
+Auch die Abfragen gehen diesen Weg: das Containerprotokoll wandert als
+`?form=test&clog=<name>` in die Adresse. **Eine** Regel für alle Handler — die
+Ausnahme wäre genau die, die man später vergisst.
+
+### Der Reiter „Logdateien" stand nach jedem Neustart leer
+
+Gemessen: sieben Stunden nach einem Neustart war `log/plugins/dockerng/` leer —
+bei rund 440 Taktläufen. Folgerichtig, denn protokolliert wird nur bei
+**Wechsel** des Befundes, und `log/` liegt auf einer Ramdisk. Im Ergebnis war
+aber genau der Zustand zurück, den 1.1.0 behoben hat, und ein leerer Reiter
+sieht aus wie ein Bedienfehler des Anwenders.
+
+Der Minutentakt schreibt jetzt **eine Zeile je Systemstart**. Erkannt wird der
+erste Lauf daran, dass der Stand aus der Zustandsdatei älter ist als der
+Systemstart aus `/proc/uptime` — die Zustandsdatei liegt unter `data/` und
+übersteht den Neustart, das Protokoll unter `log/` nicht. Genau diese
+Ungleichzeitigkeit macht die Erkennung möglich, ohne etwas zusätzlich zu
+speichern.
+
+### Die eigene Fassungsangabe war mitgealtert
+
+Dieser Abschnitt trug bis 1.3.4 die Überschrift *„Stand: vorbereitet, nicht
+veröffentlicht"* und behauptete „`plugin.cfg` steht auf 1.3.0", „die beiden
+`.cfg` auf 1.2.3" und „Der Tag heißt `v1.3.0`" — während 1.3.4 veröffentlicht,
+getaggt und installiert war. Dieselbe Klasse, die
+`Regeln/11_github-release.md` für Kommentare in der `.cfg` beschreibt, nur in
+der README. Aufgefallen ist sie nicht beim Lesen, sondern weil
+`fassung_setzen.py` beim Anheben auf 1.3.5 die Zeile von sich aus anmahnte.
+
+### Vierter Befund, beim Umbau gefunden: eine stumme Erfolgsmeldung
+
+Der Handler „Einstellungen zurückspielen" schrieb seine Bestätigung nach
+`$dk_meldungen[]` — mit **n**. Die Variable gab es sonst nirgends, gelesen
+wurde sie nie. Ein erfolgreiches Zurückspielen lief damit **völlig stumm** ab:
+die Konfiguration war geschrieben, und die Seite sagte nichts. PHP meldet den
+Fall nicht, weil das Anhängen an eine unbekannte Variable sie stillschweigend
+anlegt. Kein Werkzeug hat ihn gefunden — er fiel auf, weil beim Umbau jeder
+Handler einzeln angefasst wurde.
+
+## Am Gerät gemessen (06.09.2026)
+
+Erstmals über SSH am laufenden LoxBerry, rein lesend. Die vollständige Messung
+liegt unter `Geraet/2026-09-06/19_dockerng_am_geraet.md`.
+
+| Frage | Antwort |
+|---|---|
+| Erhöht `docker restart` von Hand den `RestartCount`? | **Nein.** Zwei Neustarts, Laufzeit des Containers von 26 036 s auf 54 s — Zähler blieb 0. Der Knopf kann die eigene Schleifenmeldung nicht auslösen; die Vorgabe 3 bleibt trotzdem richtig, weil drei **selbsttätige** Neustarts je Stunde eine Meldung wert sind. |
+| Kennt die Docker-Fassung `{{.HealthStatus}}`? | **Ja.** Belegt ohne Docker-Zugriff: `docker` prüft die Formatvorlage **vor** dem Socket. Ein erfundener Platzhalter endet im Template-Fehler, `{{.HealthStatus}}` kommt bis `permission denied` durch. |
+| Was kostet `docker system df`? | **Weniger als die Streuung.** Paar: 1319 gegen 1239 ms. Zehn Kontrollläufe ohne: 775–1309 ms, Spanne 534 ms. Die frühere Angabe „spürbar langsam" war eine Annahme; die Drosselung auf 15 Minuten bleibt als billige Vorsicht. |
+| Erreicht der Webserver den Socket? | **Ja**, und die `/proc`-Prüfung aus `postroot.sh` bildet es richtig ab (docker-GID 993, `Groups:` des Apache-Prozesses enthält 993). |
+| Ist die Log-Rotation gesetzt? | **Ja**, `/etc/docker/daemon.json` mit `10m`/`3`, geschrieben von `postroot.sh`. |
+| Läuft der Minutentakt? | **Ja**, aus `cron.01min`, kein unersetzter Platzhalter. Laufzeit 752–795 ms bei ruhiger Last. |
+| Antwortet die Selbstprüfung? | **Ja**: `SELFTEST;OK=0;ERR=TOKEN` mit HTTP 403. |
+| Meldet sich der Healthcheck? | **Ja**, Status 5 mit dem Befundsatz. |
+
+### Was weiterhin offen ist
+
+* **`--setup-token`** ist an dieser Anlage nicht entscheidbar: der Container ist
+  `/portainer --http-enabled`, ohne den Schalter. 1.3.0 ersetzt einen
+  **vorhandenen** Container bewusst nicht, und an einem eingerichteten Portainer
+  wäre ein Setup-Token ohnehin gegenstandslos. Messbar nur an einer frischen
+  Installation.
+* **Die Importdatei** ist nie importiert worden — `DOCKERNG` kommt in der
+  Miniserver-Struktur nullmal vor (Gegenprobe: `ACTI` 1278-mal). Ob Loxone
+  Config sie annimmt, bleibt ungemessen.
+* **Der Knopf kostet auf einem eingerichteten Portainer 20 Sekunden**, bevor er
+  „kein Token aufgetaucht" meldet. Mit einem vorgegebenen Setup-Token wären es
+  drei. Nicht behoben, weil der Schalter hier nicht greift.
 
 ### Bewusst nicht umgesetzt
 
