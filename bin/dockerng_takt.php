@@ -18,7 +18,8 @@
  * waere das ein Schreibvorgang je Minute auf der Speicherkarte.
  *
  * DIESES SKRIPT SCHREIBT NICHT NACH STDOUT.
- * Der Cron leitet stdout nicht um, und eine Ausgabe je Minute fuellt die
+ * LoxBerry verwirft stdout ohnehin (/etc/cron.d/lbdefaults), und wer das
+ * Skript anders einhaengt, fuellte mit einer Ausgabe je Minute die
  * Systemprotokolle. Was zu sagen ist, geht in das Protokoll des Plugins, das
  * die Oberflaeche im Reiter Logdateien anzeigt. Nur '--einmal' auf der
  * Kommandozeile gibt eine Zusammenfassung aus - fuer die Gegenprobe von Hand
@@ -48,9 +49,13 @@ foreach (array(
     if (is_file($dk_kandidat)) { $dk_gefunden = $dk_kandidat; break; }
 }
 if ($dk_gefunden === '') {
-    // Auf stderr, nicht auf stdout: der Cron faengt stderr auf, und ein
-    // stiller Fehlschlag hier bedeutet, dass der Herzschlag monatelang
-    // stillsteht, ohne dass jemand erfaehrt warum.
+    // Auf stderr, nicht auf stdout: cron/cron.01min leitet stderr nach
+    // log/plugins/<ordner>/cron.err, und der Reiter Logdateien zeigt die
+    // Datei an. BERICHTIGT in 1.3.7 - bis dahin stand hier "der Cron faengt
+    // stderr auf". Das tat er nicht: LoxBerry ruft jede Cron-Datei mit
+    // "> /dev/null 2>&1" auf, die Meldung ging verloren. Ein stiller
+    // Fehlschlag hier bedeutet, dass der Herzschlag monatelang stillsteht,
+    // ohne dass jemand erfaehrt warum.
     fwrite(STDERR, "Docker NG: dk_lib.php nicht gefunden. Gesucht wurde unter:\n"
         . "  " . dirname(dirname(dirname(__DIR__))) . "/webfrontend/html/plugins/" . basename(__DIR__) . "/\n"
         . "  " . dirname(dirname(__DIR__)) . "/webfrontend/html/plugins/" . basename(__DIR__) . "/\n"

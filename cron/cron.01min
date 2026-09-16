@@ -45,5 +45,18 @@ fi
 exec 9>"/tmp/dockerng_takt.lock" || exit 0
 flock -n 9 || exit 0
 
+# DIE FEHLERAUSGABE GEHT NACH cron.err (Hausstandard, Regeln/06).
+# LoxBerry ruft jede Cron-Datei mit "> /dev/null 2>&1" auf - am Geraet
+# gelesen in /etc/cron.d/lbdefaults. Bis 1.3.6 ging damit alles verloren,
+# was dockerng_takt.php ausdruecklich auf stderr schreibt, und der Kommentar
+# dort behauptete das Gegenteil. Das Verzeichnis wird vorher angelegt, sonst
+# scheitert schon die Umlenkung. Die Datei wird auf 256 kB gekappt: log/
+# liegt im Arbeitsspeicher, und eine Warnung je Minute waere sonst ohne Ende.
+ERR="$(dirname "$PROT")/cron.err"
+mkdir -p "$(dirname "$PROT")" 2>/dev/null
+if [ -f "$ERR" ] && [ "$(stat -c %s "$ERR" 2>/dev/null || echo 0)" -gt 262144 ]; then
+    tail -n 300 "$ERR" > "$ERR.neu" 2>/dev/null && mv -f "$ERR.neu" "$ERR"
+fi
+
 cd "$VERZ" || exit 1
-php dockerng_takt.php
+php dockerng_takt.php 2>>"$ERR"

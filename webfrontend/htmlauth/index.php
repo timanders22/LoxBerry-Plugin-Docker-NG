@@ -1372,8 +1372,26 @@ $dk_logtext = dk_log_lesen(200);
 <span class="sm-mono"><?= dk_e($dk_p['log']) ?></span></p>
 <?php if (trim($dk_logtext) !== '') { ?>
 <pre class="sm-pre"><?= dk_e($dk_logtext) ?></pre>
+<?php } elseif (dk_zustand_alter() >= 0) {
+    /* Leer, obwohl der Minutentakt laeuft. Am Geraet gemessen (17.09.2026):
+     * sieben Tage nach einem Neustart war log/plugins/dockerng/ leer, zuletzt
+     * veraendert um xx:13 - der Minute der stuendlichen Protokollwartung von
+     * LoxBerry, die nur die juengsten Dateien behaelt. Bis 1.3.6 stand hier
+     * "Es liegt noch kein Protokoll vor", und das sah nach einem Fehler des
+     * Plugins aus. Die Zustandsdatei liegt unter data/ und wird nicht
+     * gekuerzt - sie beantwortet die eigentliche Frage. */
+    $dk_zd = dk_zustandsdatei(); ?>
+<div class="sm-hinweis"><?= sprintf(dk_t('MELDUNG.KEIN_LOG_TAKT'), dk_zustand_alter(), isset($dk_zd['zaehler']) ? (int) $dk_zd['zaehler'] : 0) ?></div>
 <?php } else { ?>
 <div class="sm-hinweis"><?= dk_t('MELDUNG.KEIN_LOG') ?></div>
+<?php } ?>
+<?php
+/* Fehlerausgabe des Minutentakts - erst seit 1.3.7 ueberhaupt erfasst.
+ * Nur anzeigen, wenn etwas darin steht: eine leere Warnung waere Rauschen. */
+$dk_cronerr = dk_log_ende($dk_p['cronerr'], 20);
+if ($dk_cronerr) { ?>
+<div class="sm-warnung"><?= sprintf(dk_t('LOG.CRONERR'), dk_e($dk_p['cronerr'])) ?></div>
+<pre class="sm-pre"><?= dk_e(implode("\n", $dk_cronerr)) ?></pre>
 <?php } ?>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?= dk_t('LEGENDE.AKTION_LOG') ?></span>

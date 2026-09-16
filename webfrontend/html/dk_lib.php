@@ -93,6 +93,8 @@ function dk_paths()
         'sicherung' => $home . '/config/plugins/' . $ordner . '.backup.json',
         'logdir'    => $home . '/log/plugins/' . $ordner,
         'log'       => $home . '/log/plugins/' . $ordner . '/dockerng.log',
+        // Fehlerausgabe des Minutentakts, umgelenkt in cron/cron.01min.
+        'cronerr'   => $home . '/log/plugins/' . $ordner . '/cron.err',
         'datadir'   => $home . '/data/plugins/' . $ordner,
         'zustand'   => $home . '/data/plugins/' . $ordner . '/zustand.json',
     );
@@ -301,6 +303,51 @@ function dk_config()
     $gemerkt = dk_config_normieren(dk_json_lesen($p['config']));
     dk_config_speicher($gemerkt);
     return $gemerkt;
+}
+
+/**
+ * Fehlende Einstellungen EINMAL mit ihrer Vorgabe in die Datei schreiben.
+ *
+ * Am Geraet gemessen (17.09.2026, 1.3.6): dockerng.json trug drei von zehn
+ * Schluesseln - den Stand von vor 1.3.0. dk_config_normieren() ergaenzte die
+ * uebrigen bei jedem Aufruf im Speicher, geschrieben wurden sie nie. Das
+ * wirkt gleich und ist doch eine Annahme statt einer Auskunft: die Datei
+ * sagt nicht, womit das Plugin arbeitet, und eine spaetere Aenderung einer
+ * Vorgabe haette jede solche Anlage still mitgeaendert. Hausstandard
+ * (Regeln/05): vervollstaendigen, nicht nur ergaenzen - einmal, mit
+ * Protokollzeile, beim Dienststart. Der Dienst dieses Plugins ist der
+ * Minutentakt; weil nur bei FEHLENDEN Schluesseln geschrieben wird, bleibt
+ * es bei einem Schreibvorgang.
+ *
+ * Nur wenn die Datei ein Merkwort traegt. Eine fehlende oder beschaedigte
+ * Konfiguration ist Sache der Selbstheilung in dk_config() - hier wird
+ * nichts angelegt und nichts ueberdeckt.
+ *
+ * Geschrieben werden die Werte AUS DER DATEI, nicht die normierten: ein
+ * Wert, den dk_config_normieren() beim Lesen begrenzt, bleibt in der Datei,
+ * wie er ist - sonst wuerde er hier still ueberschrieben. Fremde Schluessel
+ * bleiben ebenfalls stehen.
+ *
+ * Rueckgabe: Liste der eingetragenen Schluessel (leer = nichts zu tun).
+ */
+function dk_config_vervollstaendigen()
+{
+    $p = dk_paths();
+    clearstatcache(true, $p['config']);
+    $roh = @is_file($p['config']) ? (string) @file_get_contents($p['config']) : '';
+    if (!dk_konfig_taugt($roh)) { return array(); }
+    $datei = json_decode($roh, true);
+    $fehlend = array();
+    foreach (dk_vorgaben() as $k => $w) {
+        if (!array_key_exists($k, $datei)) {
+            $datei[$k] = $w;
+            $fehlend[] = $k;
+        }
+    }
+    if (!$fehlend) { return array(); }
+    if (!dk_config_schreiben($datei)) { return array(); }
+    dk_log(sprintf(dk_t('LOG.VERVOLLSTAENDIGT'), count($fehlend), implode(', ', $fehlend)));
+    return $fehlend;
 }
 
 function dk_config_schreiben($cfg)
@@ -1224,6 +1271,7 @@ function dk_startzeit()
 
 function dk_takt()
 {
+    dk_config_vervollstaendigen();
     $cfg = dk_config();
     $alt = dk_zustandsdatei();
     $jetzt = time();

@@ -3,9 +3,71 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.6 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.7 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.7 — am Gerät nachgemessen (17.09.2026)
+
+1.3.6 lief seit dem 08.09.2026 am LoxBerry; die Prüfsummen der fünf
+Programmdateien stimmten mit dem veröffentlichten Stand überein. Fehlerfrei
+waren: der Endpunkt (ohne Merkwort, mit falschem Merkwort, mit unbekannter
+Aktion und mit eingeschleustem Befehl abgewiesen — 403 bzw. 400 —, mit
+richtigem Merkwort 200 für alle vier Aktionen), die Selbstprüfung, der
+Healthcheck (Status 5), der Minutentakt von Hand (Rückgabewert 0) und alle
+fünf Reiter unter PHP 7.4 ohne eine Warnung. Vier Befunde:
+
+### Die Konfiguration wurde nie vervollständigt
+
+In `dockerng.json` standen drei von zehn Einstellungen — der Stand von vor
+1.3.0. Die sieben späteren wurden bei jedem Aufruf im Speicher mit ihrer
+Vorgabe ergänzt, aber nie aufgeschrieben. Das wirkt gleich und ist doch eine
+Annahme statt einer Auskunft: die Datei sagt nicht, womit das Plugin arbeitet,
+und eine spätere Änderung einer Vorgabe hätte jede solche Anlage still
+mitgeändert. Der Minutentakt trägt fehlende Einstellungen jetzt **einmal** mit
+ihrer Vorgabe in die Datei ein und schreibt dazu eine Zeile ins Protokoll —
+nur, wenn die Datei ein Merkwort trägt. Eine fehlende oder beschädigte
+Konfiguration legt er nicht an und überdeckt sie nicht; dafür ist die
+Selbstheilung da. Vorhandene Werte bleiben, wie sie in der Datei stehen, auch
+Einstellungen, die das Plugin nicht kennt.
+
+### Fehler des Minutentakts gingen verloren
+
+`dockerng_takt.php` schreibt einen Abbruch ausdrücklich auf die
+Fehlerausgabe, und der Kommentar dazu versprach, der Cron fange sie auf. Das
+tut er nicht: LoxBerry ruft jede Cron-Datei mit `> /dev/null 2>&1` auf
+(`/etc/cron.d/lbdefaults`, am Gerät gelesen). Die Fehlerausgabe geht jetzt
+nach `log/plugins/dockerng/cron.err`, auf 256 kB gekappt, und der Reiter
+*Logdateien* zeigt die letzten Zeilen, sobald etwas darin steht.
+
+### Der Reiter „Logdateien" stand wieder leer
+
+Das Gerät startete am 10.09.2026 um 00:19. Der Protokollordner wurde zuletzt
+um 01:13:07 verändert — Minute 13 ist die stündliche Protokollwartung von
+LoxBerry (`log_maint.pl`) —, seither ist er leer. Die Wartung behält nur die
+jüngsten Protokolldateien; ein Protokoll, das nur bei einem Wechsel schreibt,
+verliert dabei. Ob die Zeile je Systemstart aus 1.3.5 um 00:20 geschrieben
+wurde, lässt sich deshalb nicht mehr belegen. Das Plugin kann das nicht
+verhindern, ohne die Protokolle anderer Plugins zu verdrängen. Der Reiter sagt
+jetzt, warum er leer ist, und nennt den letzten Durchlauf und den Herzschlag
+aus der Zustandsdatei — die liegt unter `data/` und wird nicht gekürzt.
+
+### Ein widerlegter Satz stand noch in der Oberfläche
+
+Die Hilfe zur Neustartgrenze sagte „Nicht nachgemessen: ob ein Neustart von
+Hand diesen Zähler mit erhöht". Nachgemessen ist das seit dem 06.09.2026 —
+nein (Tabelle *Am Gerät gemessen*). Die README sagte es dort schon, die
+Oberfläche und der Abschnitt zu 1.3.0 nicht. Berichtigt in beiden Sprachen.
+
+## Neu in 1.3.6 — eine unvollständige Sicherung wird abgewiesen
+
+Bis 1.3.5 lief eine Sicherungsdatei, der Einstellungen fehlten, ohne
+Beanstandung durch: die fehlenden Werte fielen still auf die Werkseinstellung
+zurück, und die Seite meldete „1 Wert übernommen". Seit 1.3.6 nennt die
+Beanstandung die fehlenden Einstellungen, und es wird nichts geändert. Die
+eigene Sicherung ist davon nicht betroffen: sie enthält immer alle
+Einstellungen. *Dieser Abschnitt fehlte in 1.3.6 selbst und ist mit 1.3.7
+nachgetragen.*
 
 ## Neu in 1.3.5 — drei Befunde vom laufenden Gerät
 
@@ -56,6 +118,9 @@ Systemstart aus `/proc/uptime` — die Zustandsdatei liegt unter `data/` und
 übersteht den Neustart, das Protokoll unter `log/` nicht. Genau diese
 Ungleichzeitigkeit macht die Erkennung möglich, ohne etwas zusätzlich zu
 speichern.
+
+*Nachgemessen am 17.09.2026, mit 1.3.6 am Gerät:* die Zeile hält nicht lange —
+siehe *Neu in 1.3.7*.
 
 ### Die eigene Fassungsangabe war mitgealtert
 
@@ -185,8 +250,9 @@ an und überschreibt nichts, zweimal importiert hieß bisher doppelte Objekte.
   Einschaltverzögerung von 300 s verschluckte genau diesen Fall. Gezählt wird
   jetzt der Zuwachs von `RestartCount` in einem gleitenden Fenster von einer
   Stunde, ergänzt um „läuft seit unter einer Minute bei RestartCount > 0".
-  *Nicht nachgemessen:* ob ein Neustart von Hand diesen Zähler mit erhöht.
-  Deshalb ist die Grenze einstellbar und die Vorgabe 3, nicht 1.
+  Ein Neustart von Hand erhöht diesen Zähler **nicht** — am 06.09.2026 am
+  Gerät nachgemessen (Tabelle *Am Gerät gemessen*). Die Grenze ist
+  einstellbar, die Vorgabe 3.
 * **Autostart.** Ein Container mit `RestartPolicy: no` kommt nach einem
   Stromausfall nicht von selbst wieder — der klassische Stolperstein. Die
   Containertabelle sagt es jetzt.
