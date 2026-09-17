@@ -1,7 +1,7 @@
 #!/bin/bash
 # Docker NG - Minutentakt.
 #
-# REPLACELBPBINDIR und REPLACELBPLOGDIR ersetzt der LoxBerry-Installer.
+# Den bin- und den Log-Pfad des Plugins setzt der LoxBerry-Installer ein.
 #
 # ZEILENENDEN: DIESE DATEI IST LF, NICHT CRLF.
 # Der Kernel sucht sonst einen Interpreter namens "/bin/bash\r", findet ihn
@@ -13,7 +13,7 @@
 #
 # WARUM HIER EINE FEHLERMELDUNG STEHT
 # Ein blosses
-#     cd REPLACELBPBINDIR && php dockerng_takt.php
+#     cd <bin-Ordner des Plugins> && php dockerng_takt.php
 # faengt den Fehler zwar ab - aber lautlos. Bleibt der Platzhalter einmal
 # unersetzt oder fehlt der Ordner, laeuft der Cron monatelang ins Leere, und
 # in Loxone steht der Herzschlag still, ohne dass jemand den Grund findet.
