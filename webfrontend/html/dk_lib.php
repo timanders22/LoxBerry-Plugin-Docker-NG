@@ -97,6 +97,17 @@ function dk_paths()
         'cronerr'   => $home . '/log/plugins/' . $ordner . '/cron.err',
         'datadir'   => $home . '/data/plugins/' . $ordner,
         'zustand'   => $home . '/data/plugins/' . $ordner . '/zustand.json',
+        // Upgrade-Marke (Entscheidung 1, I1): NEBEN dem Datenordner, sonst
+        // loescht purge_installation sie mit. preupgrade.sh legt sie als
+        // Erstes an, postinstall.sh raeumt sie ab.
+        'marke'       => $home . '/data/plugins/' . $ordner . '.upgrade_laeuft',
+        // Zweitschrift des Einrichtungstokens von Portainer (I5), 0600, neben
+        // dem Konfigurationsordner - der Ordner selbst faellt bei jedem Upgrade.
+        'setup_zweit' => $home . '/config/plugins/' . $ordner . '.backup.setup_token',
+        // Abodatei fuer das MQTT-Gateway V1 (M7). Das Gateway liest sie selbst.
+        'abo'         => $home . '/config/plugins/' . $ordner . '/mqtt_subscriptions.cfg',
+        // Vorgemerkte Themen zum Abraeumen (M4), abgearbeitet vom Minutentakt.
+        'abraeumen'   => $home . '/data/plugins/' . $ordner . '/mqtt_abraeumen.json',
     );
     return $p;
 }
@@ -118,7 +129,18 @@ function dk_vorgaben()
 {
     return array(
         'portainer_port'   => 9000,
-        'portainer_name'   => 'portainer',
+        // HTTPS-Port des eigenen Portainer (C12, neu in 1.3.9). postroot.sh
+        // legt den Container mit beiden Ports an; bis dahin standen 9000
+        // und 9443 fest im Skript.
+        'portainer_https_port' => 9443,
+        /* 'portainer_name' ENTFAELLT seit 1.3.9 (C1, Entscheidung 9). Den
+         * eigenen Container erkennt das Plugin am Label, im Altbestand am
+         * Namen portainer UND am Abbild portainer/portainer-*. Ein frei
+         * einstellbarer Name hatte danach keinen Zweck mehr - er war nur
+         * noch der Weg, auf dem ein fremder Container (gemessen: das
+         * MG-Gateway) neu gestartet und bei der Deinstallation geloescht
+         * wurde. dk_config_vervollstaendigen() nimmt ihn einmal aus der
+         * Datei, mit Protokollzeile. */
         'aktionstoken'     => '',
         // A1 - Wachliste. Leer = alle Container.
         'wachliste'        => array(),
@@ -165,13 +187,26 @@ function dk_json_schreiben($pfad, $daten, $rechte = 0600)
 {
     $js = json_encode($daten, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     if ($js === false) { return false; }
+    return dk_datei_schreiben($pfad, $js, $rechte);
+}
+
+/**
+ * Den eigentlichen Schreibweg teilen sich JSON und rohe Inhalte (C8): die
+ * Selbstheilung schrieb bis 1.3.9 mit copy() und setzte die Rechte erst
+ * danach - die Konfiguration mit dem Merkwort lag fuer diesen Moment mit den
+ * Rechten der umask da. Jetzt gilt auch dort: Nebendatei mit Prozessnummer,
+ * Rechte vor dem Inhalt, Laenge nachzaehlen, rename().
+ */
+function dk_datei_schreiben($pfad, $inhalt, $rechte = 0600)
+{
+    $inhalt = (string) $inhalt;
     $tmp = $pfad . '.tmp.' . getmypid();
     $fh = @fopen($tmp, 'c');
     if ($fh === false) { return false; }
     @chmod($tmp, $rechte);                       // schuetzen, BEVOR Inhalt hineinkommt
     // Gegen strlen() vergleichen, nicht gegen === false: eine kurze Schreibung
     // ist genauso kaputt wie gar keine.
-    $ok = ftruncate($fh, 0) && (fwrite($fh, $js) === strlen($js));
+    $ok = ftruncate($fh, 0) && (fwrite($fh, $inhalt) === strlen($inhalt));
     fflush($fh);
     fclose($fh);
     if (!$ok) { @unlink($tmp); return false; }
@@ -182,11 +217,106 @@ function dk_json_schreiben($pfad, $daten, $rechte = 0600)
 /** Taugt dieser Dateiinhalt als Konfiguration? Entscheidend ist das Merkwort. */
 function dk_konfig_taugt($roh)
 {
-    $roh = trim((string) $roh);
+    if (!is_string($roh)) { return false; }
+    $roh = trim($roh);
     if ($roh === '' || $roh === '{}') { return false; }
     $d = json_decode($roh, true);
     if (!is_array($d)) { return false; }
-    return isset($d['aktionstoken']) && trim((string) $d['aktionstoken']) !== '';
+    /* is_string() ZUERST (C2, I6). Bis 1.3.9 stand hier
+     * trim((string) $d['aktionstoken']): eine Liste wurde zur Zeichenkette
+     * "Array", galt als Merkwort, und preupgrade.sh ueberschrieb damit die
+     * gute Zweitschrift (in WSL gemessen, Installer-Pruefer Fall E3). */
+    return isset($d['aktionstoken']) && is_string($d['aktionstoken'])
+        && trim($d['aktionstoken']) !== '';
+}
+
+/* ---------------- Wertpruefung ----------------
+ *
+ * EINE Stelle fuer die Muster, die Formular, Sicherung, Endpunkt,
+ * Oberflaeche und die Hakenskripte gemeinsam benutzen (C2, C6).
+ * Jedes Muster endet mit \z, nicht mit $ - '$' liesse einen Zeilenumbruch
+ * am Ende durch (Regeln/05).
+ */
+
+/** Containername nach dem Muster, das Docker selbst vergibt und annimmt. */
+function dk_name_gueltig($n)
+{
+    return is_string($n) && preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/', $n) === 1;
+}
+
+/** Ganze Zahl aus Formular oder Datei in [min, max], sonst null. Nie gerundet. */
+function dk_ganzzahl($w, $min, $max)
+{
+    if (is_int($w)) {
+        $n = $w;
+    } elseif (is_string($w) && preg_match('/^[0-9]{1,9}\z/', $w)) {
+        $n = (int) $w;
+    } else {
+        return null;
+    }
+    return ($n >= $min && $n <= $max) ? $n : null;
+}
+
+/** Schluessel, die eine fruehere Fassung schrieb und die keinen Zweck mehr haben. */
+function dk_veraltete_schluessel()
+{
+    return array('portainer_name');
+}
+
+/**
+ * Einen Wert der Sicherungsdatei pruefen - mit denselben Grenzen wie das
+ * Formular (C2, Bauart E).
+ * Rueckgabe array(ok, Normalform, Beschreibung des Mangels).
+ */
+function dk_wert_pruefen($k, $w)
+{
+    switch ($k) {
+        case 'portainer_port':
+            // Seit 1.3.9 legt postroot.sh den Container mit diesem Port an
+            // (C12) - Ports unter 1024 sind dem System vorbehalten.
+            $n = dk_ganzzahl($w, 1024, 65535);
+            return array($n !== null, $n, dk_t('FEHLER.PORT'));
+        case 'portainer_https_port':
+            $n = dk_ganzzahl($w, 1024, 65535);
+            return array($n !== null, $n, dk_t('FEHLER.PORT_HTTPS'));
+        case 'aktionstoken':
+            /* is_string ZUERST: eine Liste ist kein leeres Token und kein
+             * "Array", sondern ein unzulaessiger Wert. Leer heisst "kein
+             * Token gesichert" (Regeln/05, VolkswagenID 0.9.12) - das
+             * entscheidet dk_sicherung_lesen(). Sonst mindestens zwoelf
+             * Zeichen aus dem, was ohne Kodierung in eine Adresse passt:
+             * dk_token_neu() erzeugt 24, und ein Wort wie "Array" darf nie
+             * als Merkwort gelten. */
+            if (!is_string($w)) {
+                return array(false, null, dk_t('EINST.SICH_TOKEN_TYP'));
+            }
+            if ($w === '') { return array(true, '', ''); }
+            $ok = preg_match('/^[A-Za-z0-9_.\-]{12,64}\z/', $w) === 1;
+            return array($ok, $w, dk_t('EINST.SICH_TOKEN_FORM'));
+        case 'wachliste':
+            if (!is_array($w)) { return array(false, null, dk_t('FEHLER.NAME')); }
+            $aus = array();
+            foreach ($w as $n) {
+                if (!dk_name_gueltig($n)) { return array(false, null, dk_t('FEHLER.NAME')); }
+                if (!in_array($n, $aus, true)) { $aus[] = $n; }
+            }
+            return array(true, $aus, '');
+        case 'mqtt_aktiv':
+        case 'melden_aktiv':
+        case 'updates_aktiv':
+            $ok = in_array($w, array(0, 1, '0', '1'), true);
+            return array($ok, $ok ? (int) $w : null, dk_t('EINST.SICH_SCHALTER'));
+        case 'mqtt_praefix':
+            $ok = is_string($w) && preg_match('/^[A-Za-z0-9_\-]{1,32}\z/', $w) === 1;
+            return array($ok, $w, dk_t('FEHLER.MQTT_PRAEFIX'));
+        case 'schleife_grenze':
+            $n = dk_ganzzahl($w, 1, 100);
+            return array($n !== null, $n, dk_t('FEHLER.SCHLEIFE_GRENZE'));
+        case 'platz_grenze_mb':
+            $n = dk_ganzzahl($w, 0, 1048576);
+            return array($n !== null, $n, dk_t('FEHLER.PLATZ_GRENZE'));
+    }
+    return array(false, null, '');
 }
 
 /* Der Zwischenspeicher liegt in einer eigenen Funktion, damit
@@ -210,17 +340,28 @@ function dk_config_normieren($cfg)
 {
     // Grenzen durchsetzen, statt Werte ungeprueft weiterzureichen.
     $cfg = array_merge(dk_vorgaben(), is_array($cfg) ? $cfg : array());
-    $cfg['portainer_port'] = max(1, min(65535, (int) $cfg['portainer_port']));
-    $name = trim((string) $cfg['portainer_name']);
-    $cfg['portainer_name'] = preg_match('/^[A-Za-z0-9_.\-]{1,64}$/', $name) ? $name : 'portainer';
-    $cfg['aktionstoken']   = (string) $cfg['aktionstoken'];
+    $port = is_scalar($cfg['portainer_port']) ? (int) $cfg['portainer_port'] : 9000;
+    $cfg['portainer_port'] = max(1, min(65535, $port));
+    // C12: ein unbrauchbarer HTTPS-Port in der Datei gilt als nicht gesetzt.
+    $sport = is_scalar($cfg['portainer_https_port']) ? (int) $cfg['portainer_https_port'] : 0;
+    $cfg['portainer_https_port'] = ($sport >= 1 && $sport <= 65535) ? $sport : 9443;
+
+    /* is_string statt (string) (C2). Bis 1.3.9 wurde eine Liste hier zu
+     * "Array" - der Endpunkt nahm danach ?token=Array an, und das daraus
+     * abgeleitete Formularmerkmal war fuer jeden ausrechenbar (gemessen unter
+     * PHP 7.4, 8.4 und 8.5). Ein Nicht-Text gilt jetzt als "kein Token". */
+    if (!is_string($cfg['aktionstoken'])) {
+        dk_log_gebremst('token_kein_text', 'Das Aktionstoken in der Konfiguration ist keine '
+            . 'Zeichenkette (' . gettype($cfg['aktionstoken']) . ') - es gilt als nicht gesetzt.');
+        $cfg['aktionstoken'] = '';
+    }
 
     /* Die Wachliste kommt aus einer Datei und ist damit fremdbestimmt: was
      * nicht ins Muster passt, faellt heraus - nicht zurechtgebogen, denn ein
      * gekuerzter Name faende den Container nicht und meldete "fehlt". */
     $wache = array();
-    foreach ((array) (isset($cfg['wachliste']) ? $cfg['wachliste'] : array()) as $w) {
-        if (is_string($w) && preg_match('/^[A-Za-z0-9_.\-]{1,64}$/', $w) && !in_array($w, $wache, true)) {
+    foreach ((is_array($cfg['wachliste']) ? $cfg['wachliste'] : array()) as $w) {
+        if (dk_name_gueltig($w) && !in_array($w, $wache, true)) {
             $wache[] = $w;
         }
     }
@@ -233,15 +374,18 @@ function dk_config_normieren($cfg)
     /* Das MQTT-Praefix landet in Themen. Der Gateway ersetzt darin nur / und %
      * durch Unterstrich - Punkte bleiben stehen. Deshalb hier ein enges
      * Muster statt einer Ersetzung. */
-    $prae = trim((string) $cfg['mqtt_praefix']);
-    $cfg['mqtt_praefix'] = preg_match('/^[A-Za-z0-9_\-]{1,32}$/', $prae) ? $prae : 'dockerng';
+    $prae = is_string($cfg['mqtt_praefix']) ? trim($cfg['mqtt_praefix']) : '';
+    $cfg['mqtt_praefix'] = preg_match('/^[A-Za-z0-9_\-]{1,32}\z/', $prae) ? $prae : 'dockerng';
 
-    $cfg['schleife_grenze'] = max(1, min(100, (int) $cfg['schleife_grenze']));
-    $cfg['platz_grenze_mb'] = max(0, min(1048576, (int) $cfg['platz_grenze_mb']));
+    $cfg['schleife_grenze'] = max(1, min(100, is_scalar($cfg['schleife_grenze']) ? (int) $cfg['schleife_grenze'] : 3));
+    $cfg['platz_grenze_mb'] = max(0, min(1048576, is_scalar($cfg['platz_grenze_mb']) ? (int) $cfg['platz_grenze_mb'] : 512));
+
+    // Veraltete Schluessel gehoeren nicht in den Arbeitsstand (C1).
+    foreach (dk_veraltete_schluessel() as $k) { unset($cfg[$k]); }
     return $cfg;
 }
 
-function dk_config()
+function dk_config($heilen = true)
 {
     $gemerkt = dk_config_speicher();
     if ($gemerkt !== null) { return $gemerkt; }
@@ -257,52 +401,91 @@ function dk_config()
      *     config/plugins/<ordner>/…
      * Ein Geschwister des Ordners uebersteht dessen Loeschung.
      *
-     * Gemeldet von einem Mitleser, zutreffend, in 1.2.0 behoben.
+     * BERICHTIGT in 1.2.4: entschieden wird nicht an der Form des Textes,
+     * sondern daran, ob ein Merkwort darin steht (dk_konfig_taugt). Eine
+     * beschaedigte Datei wird vor dem Ueberschreiben zur Seite gelegt.
      *
-     * BERICHTIGT in 1.2.4 - die Vorkehrung versagte in genau dem Fall, fuer
-     * den sie gebaut war. Geprueft wurde bis 1.2.3 auf "leer oder {}". Eine
-     * halb geschriebene oder beschaedigte Datei - auf einer Speicherkarte nach
-     * einem Stromausfall kein Ausnahmefall - ist weder das eine noch das
-     * andere. Also: keine Wiederherstellung, dk_json_lesen() gab bei
-     * ungueltigem JSON stumm ein leeres Feld zurueck, das Merkwort war '',
-     * dk_token() wuerfelte ein neues - und dk_config_schreiben() kopierte es
-     * ueber die Sicherung. Damit war das alte Merkwort in BEIDEN Kopien fort,
-     * ausgeloest durch das blosse Oeffnen der Oberflaeche, und saemtliche
-     * Adressen im Miniserver waren tot.
+     * NEU in 1.3.9 (C8): $heilen = false fuer den UNANGEMELDETEN Endpunkt.
+     * Er rief bis 1.3.9 dk_config() vor der Tokenpruefung - ein Aufruf mit
+     * falschem Token legte die Konfiguration aus der Zweitschrift neu an
+     * (gemessen: 403, danach dockerng.json 0600 und eine Protokollzeile).
+     * Jetzt liest der Endpunkt die Zweitschrift nur, schreibt nichts und
+     * protokolliert nichts; geheilt wird ueber die Oberflaeche und den
+     * Minutentakt. Geschrieben wird ueber dk_datei_schreiben(), nicht mehr
+     * ueber copy() - Rechte vor dem Inhalt.
      *
-     * Jetzt entscheidet nicht die Form des Textes, sondern ob ein Merkwort
-     * darin steht (dk_konfig_taugt). Und eine beschaedigte Datei wird vor dem
-     * Ueberschreiben zur Seite gelegt, statt verworfen zu werden.
+     * Die LAGE wird gemerkt, BEVOR geheilt wird (O4, Regeln/05): die
+     * Pruefzeile im Reiter Test sah bis 1.3.9 nur die schon geheilte Datei.
      */
-    $roh   = @is_file($p['config']) ? (string) @file_get_contents($p['config']) : '';
+    $roh   = @is_file($p['config']) ? @file_get_contents($p['config']) : false;
+    $roh   = is_string($roh) ? $roh : '';
     $taugt = dk_konfig_taugt($roh);
+    $bkroh = @is_file($p['sicherung']) ? @file_get_contents($p['sicherung']) : false;
+    $bkroh = is_string($bkroh) ? $bkroh : '';
+    $bk_taugt = dk_konfig_taugt($bkroh);
+    $leer  = (trim($roh) === '' || trim($roh) === '{}');
 
-    if (!$taugt && @is_file($p['sicherung']) && dk_konfig_taugt(@file_get_contents($p['sicherung']))) {
-        @mkdir($p['configdir'], 0755, true);
-        // Beschaedigtes NICHT wegwerfen: darin koennen Einstellungen stehen,
-        // die die Sicherung noch nicht kennt.
-        if (trim($roh) !== '' && trim($roh) !== '{}') {
-            $beiseite = $p['config'] . '.kaputt';
-            if (@copy($p['config'], $beiseite)) { @chmod($beiseite, 0600); }
-            dk_log('Die Konfiguration war unbrauchbar (kein Merkwort lesbar). Sie liegt '
-                . 'zur Ansicht unter ' . $beiseite . '.');
+    if (!@is_file($p['config'])) { $lage = 'fehlt'; }
+    elseif ($taugt)              { $lage = 'ok'; }
+    elseif ($leer)               { $lage = 'leer'; }
+    else                         { $lage = 'kaputt'; }
+
+    $quelle = $roh;
+    if (!$taugt && $bk_taugt) {
+        $quelle = $bkroh;
+        if (!$heilen) {
+            $lage .= '_zweitschrift_gelesen';
+        } else {
+            if (!@is_dir($p['configdir'])) { @mkdir($p['configdir'], 0755, true); }
+            // Beschaedigtes NICHT wegwerfen: darin koennen Einstellungen
+            // stehen, die die Sicherung noch nicht kennt.
+            if (!$leer) {
+                $beiseite = $p['config'] . '.kaputt';
+                if (dk_datei_schreiben($beiseite, $roh, 0600)) {
+                    dk_log('Die Konfiguration war unbrauchbar (kein Merkwort lesbar). Sie liegt '
+                        . 'zur Ansicht unter ' . $beiseite . '.');
+                }
+            }
+            if (dk_datei_schreiben($p['config'], $bkroh, 0600)) {
+                $lage .= '_geheilt';
+                dk_log('Konfiguration aus der Sicherung ' . $p['sicherung']
+                    . ' wiederhergestellt. Das Merkwort fuer den Endpunkt bleibt damit gueltig.');
+            } else {
+                $lage .= '_nicht_geheilt';
+                dk_log_gebremst('heilen_schreiben', 'Die Konfiguration liess sich aus der Sicherung '
+                    . 'nicht zurueckschreiben: ' . $p['config']);
+            }
         }
-        if (@copy($p['sicherung'], $p['config'])) {
-            @chmod($p['config'], 0600);
-            dk_log('Konfiguration aus der Sicherung ' . $p['sicherung']
-                . ' wiederhergestellt. Das Merkwort fuer den Endpunkt bleibt damit gueltig.');
+    } elseif (!$taugt && !$leer) {
+        $lage = 'kaputt_ohne_zweitschrift';
+        if ($heilen) {
+            // Kaputt UND keine brauchbare Sicherung. Dann wird gleich ein neues
+            // Merkwort entstehen - das gehoert benannt, nicht verschwiegen.
+            dk_log('Die Konfiguration ist unbrauchbar und es gibt keine verwertbare '
+                . 'Sicherung. Es wird ein NEUES Merkwort erzeugt; alle Adressen im '
+                . 'Miniserver muessen danach nachgezogen werden.');
         }
-    } elseif (!$taugt && trim($roh) !== '' && trim($roh) !== '{}') {
-        // Kaputt UND keine brauchbare Sicherung. Dann wird gleich ein neues
-        // Merkwort entstehen - das gehoert benannt, nicht verschwiegen.
-        dk_log('Die Konfiguration ist unbrauchbar und es gibt keine verwertbare '
-            . 'Sicherung. Es wird ein NEUES Merkwort erzeugt; alle Adressen im '
-            . 'Miniserver muessen danach nachgezogen werden.');
     }
+    dk_konfig_lage($lage);
 
-    $gemerkt = dk_config_normieren(dk_json_lesen($p['config']));
+    $d = json_decode($quelle, true);
+    $gemerkt = dk_config_normieren(is_array($d) ? $d : array());
     dk_config_speicher($gemerkt);
     return $gemerkt;
+}
+
+/**
+ * Die Lage der Konfiguration beim ERSTEN Lesen dieses Aufrufs (O4).
+ * ok | fehlt | leer | kaputt | kaputt_ohne_zweitschrift, bei den ersten drei
+ * ggf. mit _geheilt, _nicht_geheilt oder _zweitschrift_gelesen. Ein spaeteres
+ * 'ok' ueberschreibt den ersten Stand nicht - ein geheilter Schaden ist kein
+ * Nicht-Schaden (Regeln/05).
+ */
+function dk_konfig_lage($neu = null)
+{
+    static $lage = null;
+    if ($neu !== null && $lage === null) { $lage = (string) $neu; }
+    return $lage === null ? '' : $lage;
 }
 
 /**
@@ -334,7 +517,7 @@ function dk_config_vervollstaendigen()
 {
     $p = dk_paths();
     clearstatcache(true, $p['config']);
-    $roh = @is_file($p['config']) ? (string) @file_get_contents($p['config']) : '';
+    $roh = @is_file($p['config']) ? @file_get_contents($p['config']) : false;
     if (!dk_konfig_taugt($roh)) { return array(); }
     $datei = json_decode($roh, true);
     $fehlend = array();
@@ -344,10 +527,27 @@ function dk_config_vervollstaendigen()
             $fehlend[] = $k;
         }
     }
-    if (!$fehlend) { return array(); }
+    /* Veraltete Schluessel (C1: portainer_name) werden EINMAL aus der Datei
+     * genommen - mit einer Zeile, die den alten Wert nennt. Stand dort ein
+     * anderer Name als portainer, ist das die Stelle, an der der Anwender
+     * erfaehrt, dass dieser Container nicht mehr angefasst wird. */
+    $veraltet = array();
+    foreach (dk_veraltete_schluessel() as $k) {
+        if (array_key_exists($k, $datei)) {
+            $veraltet[$k] = $datei[$k];
+            unset($datei[$k]);
+        }
+    }
+    if (!$fehlend && !$veraltet) { return array(); }
     if (!dk_config_schreiben($datei)) { return array(); }
-    dk_log(sprintf(dk_t('LOG.VERVOLLSTAENDIGT'), count($fehlend), implode(', ', $fehlend)));
-    return $fehlend;
+    if ($fehlend) {
+        dk_log(sprintf(dk_t('LOG.VERVOLLSTAENDIGT'), count($fehlend), implode(', ', $fehlend)));
+    }
+    foreach ($veraltet as $k => $w) {
+        dk_log(sprintf(dk_t('LOG.VERALTET_ENTFERNT'), $k,
+            is_string($w) ? $w : (string) json_encode($w)));
+    }
+    return array_merge($fehlend, array_keys($veraltet));
 }
 
 function dk_config_schreiben($cfg)
@@ -362,9 +562,11 @@ function dk_config_schreiben($cfg)
      *
      * Sonst ueberschreibt ein Speichervorgang ohne Merkwort die letzte gute
      * Kopie. Die Sicherung ist die Rueckfallebene; sie darf nie schlechter
-     * werden als das, was sie sichern soll.
+     * werden als das, was sie sichern soll. is_string statt (string): eine
+     * Liste waere sonst "Array" geworden und mitgezogen worden (C2).
      */
-    if (trim((string) $cfg['aktionstoken']) !== '') {
+    if (isset($cfg['aktionstoken']) && is_string($cfg['aktionstoken'])
+        && trim($cfg['aktionstoken']) !== '') {
         if (!dk_json_schreiben($p['sicherung'], $cfg, 0600)) {
             dk_log('Die Zweitschrift liess sich nicht schreiben: ' . $p['sicherung']);
         }
@@ -372,8 +574,10 @@ function dk_config_schreiben($cfg)
     // Den Zwischenspeicher nachziehen, sonst arbeitet der Rest dieses Aufrufs
     // mit dem alten Stand weiter.
     dk_config_speicher(dk_config_normieren($cfg));
-    dk_log('Konfiguration gespeichert (Port ' . (int) $cfg['portainer_port']
-        . ', Container ' . $cfg['portainer_name'] . ').');
+    dk_log('Konfiguration gespeichert (Port '
+        . (isset($cfg['portainer_port']) && is_scalar($cfg['portainer_port']) ? (int) $cfg['portainer_port'] : 0) . ').');
+    // Das Abo fuer Gateway V1 folgt dem Praefix (M7).
+    dk_abo_datei_nachfuehren();
     return true;
 }
 
@@ -513,10 +717,20 @@ function dk_e($wert)
  * Einen Befehl ausfuehren und ALLES mitnehmen.
  * Rueckgabe: array(ausgabe, fehlertext, rueckgabewert)
  */
-function dk_ausfuehren($befehl)
+function dk_ausfuehren($befehl, $sekunden = null, $mit_frist = true)
 {
     $aus = array();
     $code = 0;
+    /* ZEITGRENZE (C3). Bis 1.3.9 lief jeder docker-Aufruf ohne Frist. Hing
+     * der Docker-Dienst, hing der Minutentakt mit, hielt die Cron-Sperre, und
+     * jeder weitere Takt ging still (gemessen: nach 8 s lebte der Takt noch,
+     * der Zaehler stand); jeder Abruf des Miniservers band einen
+     * Apache-Arbeiter ohne Ende. Jetzt steht 'timeout -k 2 <n>' vor jedem
+     * docker-Aufruf, n setzt der Einstieg (dk_zeitgrenze). Gibt es kein
+     * timeout (etwa ein Pruefrechner), laeuft der Befehl wie bisher. */
+    if ($mit_frist && strncmp($befehl, 'docker ', 7) === 0) {
+        $befehl = dk_zeitvorsatz($sekunden) . $befehl;
+    }
     // Die Fehlerausgabe kommt in eine eigene Datei, damit sie sich von der
     // Nutzausgabe trennen laesst - '2>&1' vermischte beides, und dann steht
     // eine Fehlermeldung mitten in der Containerliste.
@@ -532,6 +746,41 @@ function dk_ausfuehren($befehl)
 }
 
 /**
+ * Frist fuer docker-Aufrufe in Sekunden (C3). Der Einstieg setzt sie:
+ * Endpunkt 8 s (der Miniserver fragt alle 60 s), Minutentakt 30 s,
+ * Oberflaeche 15 s, Hakenskripte ueber bin/dk_eigen.php 30 s.
+ */
+function dk_zeitgrenze($neu = null)
+{
+    static $s = 20;
+    if ($neu !== null) { $s = max(1, min(900, (int) $neu)); }
+    return $s;
+}
+
+/** 'timeout -k 2 <n> ' vor einem Befehl, oder Leerstring ohne timeout. */
+function dk_zeitvorsatz($sekunden = null)
+{
+    static $bin = null;
+    if ($bin === null) {
+        $bin = '';
+        $a = array();
+        $rc = 1;
+        @exec('command -v timeout 2>/dev/null', $a, $rc);
+        $k = trim(implode('', $a));
+        if ($rc === 0 && substr($k, -8) === '/timeout') { $bin = $k; }
+    }
+    if ($bin === '') { return ''; }
+    $n = ($sekunden === null) ? dk_zeitgrenze() : max(1, (int) $sekunden);
+    return escapeshellarg($bin) . ' -k 2 ' . $n . ' ';
+}
+
+/** Rueckgabewert von timeout: 124 abgelaufen, 137 nach -k getoetet. */
+function dk_zeitueberschreitung($code)
+{
+    return $code === 124 || $code === 137;
+}
+
+/**
  * Warum klappt der Zugriff auf Docker nicht?
  *
  * Rueckgabe: array(ok, grund, meldung). 'grund' ist ein kurzes Merkwort fuer
@@ -544,9 +793,10 @@ function dk_zustand($frisch = false)
     if ($z !== null) {
         return $z;
     }
+    /* Die Klartexte stehen seit 1.3.9 in den Sprachdateien (O7, [GRUND]);
+     * die Kennung in $z[1] bleibt, sie steht in der Antwortzeile an Loxone. */
     if (dk_bin() === '') {
-        $z = array(0, 'KEIN_DOCKER',
-                   'Das Programm docker ist nicht vorhanden.');
+        $z = array(0, 'KEIN_DOCKER', dk_t('GRUND.KEIN_DOCKER'));
         return $z;
     }
     list($aus, $fehler, $code) = dk_ausfuehren('docker ps --format "{{.Names}}"');
@@ -554,27 +804,24 @@ function dk_zustand($frisch = false)
         $z = array(1, '', '');
         return $z;
     }
+    if (dk_zeitueberschreitung($code)) {
+        $z = array(0, 'ZEITUEBERSCHREITUNG', sprintf(dk_t('GRUND.ZEITUEBERSCHREITUNG'), dk_zeitgrenze()));
+        dk_log_gebremst('zustand_zeitueberschreitung', 'Docker antwortet nicht in der Frist ('
+            . dk_zeitgrenze() . ' s, Rueckgabewert ' . $code . ').');
+        return $z;
+    }
     $t = strtolower($fehler);
     if (strpos($t, 'permission denied') !== false || strpos($t, 'connect: permission') !== false) {
-        $z = array(0, 'KEINE_RECHTE',
-            'Der Webserver darf nicht auf den Docker-Socket zugreifen. Das ist nach '
-            . 'einer frischen Installation der Regelfall und KEIN Defekt: der Benutzer '
-            . 'loxberry wurde der Gruppe docker hinzugefuegt, aber Linux zieht neue '
-            . 'Gruppen fuer bereits laufende Prozesse nicht nach - der Webserver laeuft '
-            . 'noch mit den alten. Abhilfe: den LoxBerry einmal neu starten. Wer nicht '
-            . 'neu starten will, kann auch nur den Webserver durchstarten: '
-            . 'sudo systemctl restart apache2 - dabei bricht diese Seite kurz ab.');
+        $z = array(0, 'KEINE_RECHTE', dk_t('GRUND.KEINE_RECHTE'));
         return $z;
     }
     if (strpos($t, 'cannot connect to the docker daemon') !== false
         || strpos($t, 'is the docker daemon running') !== false) {
-        $z = array(0, 'DIENST_AUS',
-            'Der Docker-Dienst laeuft nicht. Pruefen mit: systemctl status docker, '
-            . 'starten mit: sudo systemctl enable --now docker');
+        $z = array(0, 'DIENST_AUS', dk_t('GRUND.DIENST_AUS'));
         return $z;
     }
     $z = array(0, 'FEHLER', $fehler !== '' ? $fehler
-               : ('docker endete mit Rueckgabewert ' . $code . ' ohne Meldung.'));
+               : sprintf(dk_t('GRUND.FEHLER_OHNE_TEXT'), $code));
     // Gebremst, weil diese Stelle bei jedem Seitenaufruf und jedem
     // Endpunktabruf durchlaufen wird - ungebremst waere die Logdatei nach
     // einer Stunde Dauerstoerung unlesbar.
@@ -673,14 +920,17 @@ function dk_container($frisch = false)
     if ($frisch) { $liste = null; }
     if ($liste !== null) { return $liste; }
     if (dk_bin() === '') { return array(); }
-    list($ok) = dk_zustand($frisch);
+    // Die gemerkte Antwort (C3): wer frisch fragen will, hat vorher
+    // dk_zustand(true) gerufen - ein zweites Nachfragen kostete bei
+    // haengendem Docker eine zweite volle Frist.
+    list($ok) = dk_zustand();
     if (!$ok) {
         // Nicht so tun, als gaebe es keine Container. Wer hier eine leere
         // Liste bekommt, soll sie an dk_zustand() halten.
         return array();
     }
     list($roh, $fehler, $code) = dk_ausfuehren(
-        "docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.State}}\t{{.HealthStatus}}'");
+        "docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.State}}\t{{.HealthStatus}}\t{{.Ports}}'");
     if ($code !== 0) {
         return array();
     }
@@ -698,6 +948,9 @@ function dk_container($frisch = false)
             'laeuft'    => $zustand === 'running' ? 1 : 0,
             'ausfall'   => dk_ist_ausfall($zustand, $t[2]),
             'gesund'    => dk_gesundheit_ableiten(isset($t[4]) ? $t[4] : '', $t[2]),
+            // C11: die Portspalte, wie docker ps sie schreibt; zerlegt wird
+            // erst bei der Anzeige (dk_ports_zerlegen).
+            'ports'     => isset($t[5]) ? trim($t[5]) : '',
         );
     }
     // Autostart und Neustartzaehler stehen nur in 'docker inspect' - ein
@@ -777,8 +1030,11 @@ function dk_details($frisch = false)
 
     $vorlage = '{{.Name}}|{{.HostConfig.RestartPolicy.Name}}|{{.RestartCount}}'
              . '|{{.State.StartedAt}}|{{.State.ExitCode}}|{{.State.OOMKilled}}';
+    // Beide Glieder der Pfeife bekommen die Frist (C3).
+    $v = dk_zeitvorsatz();
     list($roh, $fehler, $code) = dk_ausfuehren(
-        'docker ps -aq | xargs -r docker inspect --format ' . escapeshellarg($vorlage));
+        $v . 'docker ps -aq | ' . $v . 'xargs -r docker inspect --format ' . escapeshellarg($vorlage),
+        null, false);
     if ($code !== 0 || trim($roh) === '') { return $d; }
 
     foreach (explode("\n", trim($roh)) as $zeile) {
@@ -909,8 +1165,26 @@ function dk_zustandsdatei_schreiben($daten)
 function dk_zustand_alter()
 {
     $z = dk_zustandsdatei();
-    if (!isset($z['zeit'])) { return -1; }
-    return max(0, time() - (int) $z['zeit']);
+    $ts = isset($z['zeit']) ? (int) $z['zeit'] : 0;
+    return $ts > 0 ? max(0, time() - $ts) : -1;
+}
+
+/**
+ * Die Altersgrenze des Minutentakts (C4, Entscheidung 4): dreimal der Takt
+ * von 60 s. EINE Stelle fuer den Endpunkt, bin/healthcheck, die
+ * MQTT-Themenliste, den Befund und den Reiter Test. Bis 1.3.9 standen dort
+ * 300 s (Endpunkt), 300 s (Healthcheck) und 180 s (Reiter Test) nebeneinander.
+ */
+function dk_takt_grenze()
+{
+    return 180;
+}
+
+/** Ist der Stand aus dem Minutentakt jung genug, um ihn weiterzugeben? */
+function dk_takt_frisch()
+{
+    $a = dk_zustand_alter();
+    return $a >= 0 && $a <= dk_takt_grenze();
 }
 
 /* ---------------- Plattenbelegung ----------------
@@ -938,7 +1212,8 @@ function dk_platz_messen()
     list($ok) = dk_zustand();
     if (!$ok) { return $aus; }
 
-    list($roh, $fehler, $code) = dk_ausfuehren('docker system df --format ' . escapeshellarg('{{json .}}'));
+    // Eigene Frist: 'docker system df' laeuft Verzeichnisse ab (C3).
+    list($roh, $fehler, $code) = dk_ausfuehren('docker system df --format ' . escapeshellarg('{{json .}}'), 60);
     if ($code === 0 && trim($roh) !== '') {
         $bytes = 0; $freigebbar = 0;
         foreach (explode("\n", trim($roh)) as $zeile) {
@@ -1006,30 +1281,339 @@ function dk_mqtt_wert($v)
 }
 
 /** Rueckgabe: Zahl der wirklich abgesetzten Meldungen. 0 = nichts ging hinaus. */
-function dk_mqtt($werte)
+function dk_mqtt($werte, $alt = array(), $erzwingen = false)
 {
+    $aus = array('gesendet' => 0, 'gescheitert' => 0, 'uebersprungen' => 0, 'letzte' => array());
     $cfg = dk_config();
-    if (empty($cfg['mqtt_aktiv'])) { return 0; }
+    if (empty($cfg['mqtt_aktiv'])) { return $aus; }
     $lage = dk_mqtt_lage();
     if (!$lage['udpport']) {
         dk_log_gebremst('mqtt_kein_port',
             'MQTT ist eingeschaltet, aber der LoxBerry nennt keinen UDP-Eingang '
             . 'fuer das MQTT-Gateway. Unter System, MQTT Gateway einrichten.');
-        return 0;
+        $aus['gescheitert'] = count($werte);
+        return $aus;
     }
     $s = @stream_socket_client('udp://127.0.0.1:' . $lage['udpport'], $eno, $estr, 2);
     if (!$s) {
         dk_log_gebremst('mqtt_kein_socket',
             'MQTT: UDP-Eingang ' . $lage['udpport'] . ' nicht erreichbar (' . $estr . ')');
-        return 0;
+        $aus['gescheitert'] = count($werte);
+        return $aus;
     }
     $prae = $cfg['mqtt_praefix'];
-    $n = 0;
+    $letzte = (isset($alt['letzte']) && is_array($alt['letzte'])) ? $alt['letzte'] : array();
+    $leben = dk_mqtt_lebenszeichen();
+    $jetzt = time();
+    $erster = true;
     foreach ((array) $werte as $k => $v) {
-        if (@fwrite($s, 'publish ' . $prae . '/' . $k . ' ' . dk_mqtt_wert($v)) !== false) { $n++; }
+        $wert = dk_mqtt_wert($v);
+        $retain = dk_mqtt_retain_eintrag($k) === 1;
+        if ($wert === '') {
+            // Eine leere Nutzlast gibt es nur zum Abraeumen (M4). Ein leerer
+            // Zustand geht als '-' hinaus (Entscheidung 5), ein leerer
+            // Messwert gar nicht.
+            if (!$retain) { $aus['uebersprungen']++; continue; }
+            $wert = '-';
+        }
+        /* Sendelast (M6): ein unveraenderter Wert geht hoechstens alle zehn
+         * Minuten erneut hinaus - so heilt ein verlorenes Datagramm spaetestens
+         * dann. Das Lebenszeichen geht in JEDEM Takt hinaus. */
+        $vorher = (isset($letzte[$k]) && is_array($letzte[$k]) && count($letzte[$k]) === 2) ? $letzte[$k] : null;
+        if (!$erzwingen && !in_array($k, $leben, true) && $vorher !== null
+            && (string) $vorher[0] === $wert && ($jetzt - (int) $vorher[1]) < 600) {
+            $aus['letzte'][$k] = $vorher;
+            $aus['uebersprungen']++;
+            continue;
+        }
+        // Eine kurze Pause zwischen den Datagrammen (M6, Bauart Bewaesserung
+        // 0.9.35): der UDP-Eingang des Gateways verwirft Stoesse.
+        if (!$erster) { usleep(5000); }
+        $erster = false;
+        $zeile = ($retain ? 'retain ' : 'publish ') . $prae . '/' . $k . ' ' . $wert;
+        // "Gesendet" heisst: an den UDP-Eingang abgesetzt - nicht "angekommen"
+        // (Regeln/07). Nur bei vollstaendiger Schreibung merkt sich das
+        // Gedaechtnis den Wert; sonst geht er im naechsten Takt wieder hinaus.
+        if (@fwrite($s, $zeile) === strlen($zeile)) {
+            $aus['gesendet']++;
+            $aus['letzte'][$k] = array($wert, $jetzt);
+        } else {
+            $aus['gescheitert']++;
+        }
     }
     fclose($s);
+    return $aus;
+}
+
+/**
+ * Die Retain-Tabelle (M1, Entscheidung 3) - EINE Quelle fuer den Sender und
+ * die Spalte "zurueckbehalten" der Themenliste im Reiter MQTT.
+ *
+ * Zurueckbehalten: die Zustaende der Container und die Zaehlungen daraus.
+ * Fluechtig: das Lebenszeichen (ok, zaehler, ts) - eine Aussage des Dienstes
+ * ueber sich selbst, nie retained (Regeln/07, 17. und 19.09.2026) - und die
+ * Messwerte mit Zeitbezug (Neustarts der letzten Stunde, Plattenplatz).
+ * Ein Thema ohne Eintrag geht fluechtig hinaus. '*' steht fuer genau einen
+ * Themenabschnitt (den Containernamen).
+ */
+function dk_mqtt_retain_tabelle()
+{
+    return array(
+        'status/ok'             => 0,
+        'status/zaehler'        => 0,
+        'status/ts'             => 0,
+        'status/gesamt'         => 1,
+        'status/laeuft'         => 1,
+        'status/gestoppt'       => 1,
+        'status/ausfall'        => 1,
+        'status/pausiert'       => 1,
+        'status/ungesund'       => 1,
+        'status/fehlt'          => 1,
+        'status/portainer'      => 1,
+        'status/schleife'       => 0,
+        'platte/images_mb'      => 0,
+        'platte/freigebbar_mb'  => 0,
+        'platte/frei_mb'        => 0,
+        'container/*/laeuft'    => 1,
+        'container/*/gesund'    => 1,
+        'container/*/stand'     => 1,
+    );
+}
+
+/** Eintrag der Tabelle fuer ein Thema: 1 retained, 0 fluechtig, -1 kein Eintrag. */
+function dk_mqtt_retain_eintrag($thema)
+{
+    $t = dk_mqtt_retain_tabelle();
+    if (isset($t[$thema])) { return (int) $t[$thema]; }
+    foreach ($t as $muster => $r) {
+        if (strpos($muster, '*') === false) { continue; }
+        $re = '#^' . str_replace('\*', '[^/]+', preg_quote($muster, '#')) . '\z#';
+        if (preg_match($re, (string) $thema)) { return (int) $r; }
+    }
+    return -1;
+}
+
+/** Das Lebenszeichen: geht in jedem Takt hinaus, am Aenderungsfilter vorbei. */
+function dk_mqtt_lebenszeichen()
+{
+    return array('status/ok', 'status/zaehler', 'status/ts');
+}
+
+/**
+ * Der MQTT-Teil des Minutentakts (M1-M6).
+ *
+ * Merkt sich in zustand.json unter 'mqtt': das Praefix, was zuletzt
+ * hinausging (Aenderungsfilter) und welche Container zuletzt gemeldet wurden.
+ * Verschwindet ein Container, der NICHT auf der Wachliste steht, geht fuer
+ * seine drei Themen EINMAL '-' retained hinaus (M3, Entscheidung 9); danach
+ * wird er nicht mehr gesendet. Ein Container der Wachliste meldet weiter
+ * -1/fehlt. Antwortet Docker nicht, bleibt das Gedaechtnis der Container
+ * unangetastet - nur das Signal geht hinaus (M2).
+ */
+function dk_mqtt_takt($alt, $ok, $z)
+{
+    $cfg = dk_config();
+    dk_mqtt_abraeumen_offen();
+    if (empty($cfg['mqtt_aktiv'])) { return array(); }
+    $prae = $cfg['mqtt_praefix'];
+    $gleich = is_array($alt) && isset($alt['praefix']) && $alt['praefix'] === $prae;
+    $vorher = ($gleich && isset($alt['container']) && is_array($alt['container'])) ? $alt['container'] : array();
+    $strich = ($gleich && isset($alt['strich']) && is_array($alt['strich'])) ? $alt['strich'] : array();
+    $werte = dk_mqtt_themen();
+    $gemeldet = $vorher;
+    $weg = array();
+    if ($ok) {
+        $gemeldet = array_keys($z['wache']);
+        foreach ($vorher as $n) {
+            if (!is_string($n) || in_array($n, $gemeldet, true)) { continue; }
+            $t = str_replace(array('/', '%'), '_', $n);
+            foreach (array('laeuft', 'gesund', 'stand') as $f) {
+                $werte['container/' . $t . '/' . $f] = '-';
+            }
+            $weg[$n] = $t;
+        }
+    }
+    $erg = dk_mqtt($werte, $gleich ? $alt : array());
+    foreach ($weg as $n => $t) {
+        // Im Merker bleibt er, bis alle drei '-' abgesetzt sind; danach steht
+        // er unter 'strich', damit Praefixwechsel und Deinstallation seine
+        // retained Themen noch kennen.
+        $alle = true;
+        foreach (array('laeuft', 'gesund', 'stand') as $f) {
+            if (!isset($erg['letzte']['container/' . $t . '/' . $f])) { $alle = false; break; }
+        }
+        if ($alle) { $strich[] = $n; } else { $gemeldet[] = $n; }
+    }
+    $strich = array_slice(array_values(array_diff(array_unique(
+        array_filter($strich, 'is_string')), $gemeldet)), -500);
+    return array(
+        'praefix'   => $prae,
+        'letzte'    => $erg['letzte'],
+        'container' => array_values(array_unique($gemeldet)),
+        'strich'    => $strich,
+        'versand'   => array('zeit' => time(), 'gesendet' => $erg['gesendet'],
+                             'gescheitert' => $erg['gescheitert'], 'uebersprungen' => $erg['uebersprungen']),
+    );
+}
+
+/** Die retained Themen, die dieses Plugin unter dem Praefix zuletzt fuehrte. */
+function dk_mqtt_eigene_retained($praefix)
+{
+    $themen = array();
+    $zd = dk_zustandsdatei();
+    $m = (isset($zd['mqtt']) && is_array($zd['mqtt'])) ? $zd['mqtt'] : array();
+    if (isset($m['praefix']) && $m['praefix'] === $praefix) {
+        foreach ((isset($m['letzte']) && is_array($m['letzte'])) ? array_keys($m['letzte']) : array() as $t) {
+            if (dk_mqtt_retain_eintrag($t) === 1) { $themen[] = (string) $t; }
+        }
+        $namen = array_merge((isset($m['container']) && is_array($m['container'])) ? $m['container'] : array(),
+                             (isset($m['strich']) && is_array($m['strich'])) ? $m['strich'] : array());
+        foreach ($namen as $n) {
+            if (!is_string($n)) { continue; }
+            $t = str_replace(array('/', '%'), '_', $n);
+            foreach (array('laeuft', 'gesund', 'stand') as $f) { $themen[] = 'container/' . $t . '/' . $f; }
+        }
+    }
+    foreach (dk_mqtt_retain_tabelle() as $t => $r) {
+        if ($r === 1 && strpos($t, '*') === false) { $themen[] = $t; }
+    }
+    return array_values(array_unique($themen));
+}
+
+/**
+ * Abraeumen vormerken (M4): beim Praefixwechsel und beim Abschalten von
+ * MQTT. Die Oberflaeche schreibt nur diese Vormerkung; abgesetzt wird im
+ * Minutentakt, der ohnehin der einzige Sender ist. Rueckgabe: Zahl der Themen.
+ */
+function dk_mqtt_abraeumen_vormerken($praefix)
+{
+    $p = dk_paths();
+    $offen = dk_json_lesen($p['abraeumen']);
+    $themen = dk_mqtt_eigene_retained($praefix);
+    $bisher = (isset($offen[$praefix]) && is_array($offen[$praefix])) ? $offen[$praefix] : array();
+    $offen[$praefix] = array_values(array_unique(array_merge($bisher, $themen)));
+    if (!@is_dir($p['datadir'])) { @mkdir($p['datadir'], 0755, true); }
+    if (!dk_json_schreiben($p['abraeumen'], $offen, 0644)) {
+        dk_log('MQTT: das Abraeumen unter ' . $praefix . '/ liess sich nicht vormerken: ' . $p['abraeumen']);
+        return -1;
+    }
+    dk_log('MQTT: ' . count($offen[$praefix]) . ' zurueckbehaltene Themen unter ' . $praefix
+        . '/ zum Abraeumen vorgemerkt.');
+    return count($offen[$praefix]);
+}
+
+/** Leere retain-Nutzlasten absetzen. Rueckgabe: Liste der gescheiterten Themen. */
+function dk_mqtt_leer_senden($volle_themen, $wiederholen = 1)
+{
+    $lage = dk_mqtt_lage();
+    if (!$lage['udpport'] || !$volle_themen) { return $volle_themen; }
+    $s = @stream_socket_client('udp://127.0.0.1:' . $lage['udpport'], $eno, $estr, 2);
+    if (!$s) { return $volle_themen; }
+    $fehl = array();
+    $erster = true;
+    foreach ($volle_themen as $t) {
+        $ok = true;
+        for ($i = 0; $i < max(1, (int) $wiederholen); $i++) {
+            if (!$erster) { usleep(5000); }
+            $erster = false;
+            // Das Leerzeichen am Ende kuerzt das Gateway selbst; eine leere
+            // retain-Nutzlast loescht das Thema im Broker (Regeln/07).
+            $zeile = 'retain ' . $t . ' ';
+            if (@fwrite($s, $zeile) !== strlen($zeile)) { $ok = false; }
+        }
+        if (!$ok) { $fehl[] = $t; }
+    }
+    fclose($s);
+    return $fehl;
+}
+
+/**
+ * Vorgemerktes Abraeumen abarbeiten - auch bei ausgeschaltetem MQTT (M4).
+ * Ein Thema faellt aus der Vormerkung, sobald sein Datagramm vollstaendig
+ * abgesetzt ist (Merker auf den Erfolg des sendto). Ein Praefix, das gerade
+ * wieder in Gebrauch ist, wird nicht geleert.
+ */
+function dk_mqtt_abraeumen_offen()
+{
+    $p = dk_paths();
+    if (!@is_file($p['abraeumen'])) { return 0; }
+    $offen = dk_json_lesen($p['abraeumen']);
+    $cfg = dk_config();
+    $rest = array();
+    $n = 0;
+    foreach ($offen as $prae => $themen) {
+        if (!is_string($prae) || !preg_match('/^[A-Za-z0-9_\-]{1,32}\z/', $prae) || !is_array($themen)) { continue; }
+        if (!empty($cfg['mqtt_aktiv']) && $prae === $cfg['mqtt_praefix']) { continue; }
+        $voll = array();
+        foreach ($themen as $t) {
+            if (is_string($t) && preg_match('#^[A-Za-z0-9_./\-]{1,200}\z#', $t)) { $voll[] = $prae . '/' . $t; }
+        }
+        $fehl = dk_mqtt_leer_senden($voll);
+        $n += count($voll) - count($fehl);
+        if ($fehl) {
+            $rest[$prae] = array();
+            foreach ($fehl as $f) { $rest[$prae][] = substr($f, strlen($prae) + 1); }
+        }
+    }
+    if ($rest) {
+        dk_json_schreiben($p['abraeumen'], $rest, 0644);
+    } else {
+        @unlink($p['abraeumen']);
+    }
+    if ($n > 0) { dk_log('MQTT: ' . $n . ' zurueckbehaltene Themen abgeraeumt.'); }
     return $n;
+}
+
+/**
+ * Fuer die Deinstallation (M4, Entscheidung 3): alle eigenen retained Themen
+ * unter dem eingestellten Praefix und alles Vorgemerkte leeren. Jedes leere
+ * Datagramm geht zweimal hinaus - der Eingang verwirft Stoesse, und eine
+ * zweite Loeschung schadet nicht. Rueckgabe array(themen, gescheitert).
+ */
+function dk_mqtt_leeren_alles()
+{
+    $cfg = dk_config(false);
+    $p = dk_paths();
+    $voll = array();
+    $zd = dk_zustandsdatei();
+    $war = !empty($cfg['mqtt_aktiv']) || (isset($zd['mqtt']['praefix']));
+    if ($war) {
+        foreach (dk_mqtt_eigene_retained($cfg['mqtt_praefix']) as $t) {
+            $voll[] = $cfg['mqtt_praefix'] . '/' . $t;
+        }
+    }
+    foreach (dk_json_lesen($p['abraeumen']) as $prae => $themen) {
+        if (!is_string($prae) || !preg_match('/^[A-Za-z0-9_\-]{1,32}\z/', $prae) || !is_array($themen)) { continue; }
+        foreach ($themen as $t) {
+            if (is_string($t) && preg_match('#^[A-Za-z0-9_./\-]{1,200}\z#', $t)) { $voll[] = $prae . '/' . $t; }
+        }
+    }
+    $voll = array_values(array_unique($voll));
+    $fehl = dk_mqtt_leer_senden($voll, 2);
+    return array(count($voll), count($fehl));
+}
+
+/**
+ * Die Abodatei fuer das MQTT-Gateway V1 dem Praefix nachfuehren (M7).
+ * Das Gateway liest config/plugins/<ordner>/mqtt_subscriptions.cfg selbst
+ * (Regeln/07, am Geraet belegt 13.09.2026). Mitgeliefert wird sie mit
+ * 'dockerng/#'; nach einem Upgrade steht dort wieder die Vorgabe - deshalb
+ * fuehrt auch der Minutentakt nach. Geschrieben wird nur bei Abweichung.
+ */
+function dk_abo_datei_nachfuehren()
+{
+    $p = dk_paths();
+    if (!@is_dir($p['configdir'])) { return false; }
+    $cfg = dk_config();
+    $soll = $cfg['mqtt_praefix'] . "/#\n";
+    $ist = @is_file($p['abo']) ? (string) @file_get_contents($p['abo']) : '';
+    if ($ist === $soll) { return false; }
+    if (!dk_datei_schreiben($p['abo'], $soll, 0644)) {
+        dk_log_gebremst('abo_schreiben', 'Die Abodatei fuer das MQTT-Gateway liess sich nicht schreiben: ' . $p['abo']);
+        return false;
+    }
+    dk_log(sprintf(dk_t('LOG.ABO_GESETZT'), trim($soll)));
+    return true;
 }
 
 /**
@@ -1043,9 +1627,26 @@ function dk_mqtt($werte)
  */
 function dk_mqtt_themen()
 {
-    $z = dk_zaehlung();
+    list($ok) = dk_zustand();
+    $zd = dk_zustandsdatei();
+    $frisch = dk_takt_frisch();
     $werte = array(
-        'status/ok'        => dk_zustand()[0] ? 1 : 0,
+        'status/ok'      => $ok ? 1 : 0,
+        // Zeitstempel des letzten Takts, Unix-Sekunden, fluechtig (M5).
+        'status/ts'      => isset($zd['zeit']) ? (int) $zd['zeit'] : 0,
+    );
+    if (!$ok) {
+        /* Docker schweigt (M2, Entscheidung 8 und 9): die Zustaende bleiben im
+         * Broker stehen, nur das Signal geht hinaus. Bis 1.3.9 gingen hier
+         * 'fehlt' fuer jeden Container der Wachliste und 'gesamt 0' hinaus -
+         * dieselben Werte wie fuer einen geloeschten Container. Der freie
+         * Platz misst ohne Docker und bleibt deshalb. */
+        $werte['status/zaehler'] = isset($zd['zaehler']) ? (int) $zd['zaehler'] : 0;
+        if ($frisch && isset($zd['platz']['frei_mb'])) { $werte['platte/frei_mb'] = (int) $zd['platz']['frei_mb']; }
+        return $werte;
+    }
+    $z = dk_zaehlung();
+    $werte += array(
         'status/gesamt'    => $z['gesamt'],
         'status/laeuft'    => $z['laeuft'],
         'status/gestoppt'  => $z['gestoppt'],
@@ -1053,13 +1654,13 @@ function dk_mqtt_themen()
         'status/pausiert'  => $z['pausiert'],
         'status/ungesund'  => $z['ungesund'],
         'status/fehlt'     => $z['fehlt'],
-        'status/schleife'  => $z['schleife'],
+        // Aus dem Minutentakt: nur so lange, wie er frisch ist (C4).
+        'status/schleife'  => $frisch ? $z['schleife'] : -1,
         'status/portainer' => dk_portainer_laeuft() ? 1 : 0,
     );
-    $zd = dk_zustandsdatei();
     $werte['status/zaehler'] = isset($zd['zaehler']) ? (int) $zd['zaehler'] : 0;
     foreach (array('images_mb', 'freigebbar_mb', 'frei_mb') as $k) {
-        if (isset($zd['platz'][$k])) { $werte['platte/' . $k] = (int) $zd['platz'][$k]; }
+        if ($frisch && isset($zd['platz'][$k])) { $werte['platte/' . $k] = (int) $zd['platz'][$k]; }
     }
     $nach = array();
     foreach ($z['liste'] as $c) { $nach[$c['name']] = $c; }
@@ -1133,7 +1734,7 @@ function dk_bild_digest_lokal($bild)
 {
     list($roh, $fehler, $code) = dk_ausfuehren(
         'docker image inspect --format ' . escapeshellarg('{{range .RepoDigests}}{{.}}{{"\n"}}{{end}}')
-        . ' ' . escapeshellarg($bild));
+        . ' -- ' . escapeshellarg($bild));
     if ($code !== 0) { return ''; }
     foreach (explode("\n", trim($roh)) as $z) {
         if (strpos($z, '@sha256:') !== false) { return substr($z, strpos($z, '@') + 1); }
@@ -1175,14 +1776,27 @@ function dk_http_kopf($url, $koepfe, $sekunden = 8)
         'follow_location' => 0,
         'user_agent'      => 'LoxBerry-Docker-NG',
     )));
+    /* Frist fuer den VERBINDUNGSAUFBAU (C3): 'timeout' oben gilt nur fuers
+     * Lesen, der Aufbau haengt an default_socket_timeout - ab Werk 60 s. */
+    $frist_alt = ini_get('default_socket_timeout');
+    @ini_set('default_socket_timeout', (string) (int) $sekunden);
     // Eigener Fehlerbehandler statt @: eine nicht erreichbare Registry ist ein
     // erwarteter Ausgang (-1 = nicht messbar), kein Befund. Siehe die
     // ausfuehrliche Begruendung bei dk_endpunkt_probe().
     set_error_handler(function () { return true; });
     $fp = fopen($url, 'rb', false, $ctx);
-    $kopf = isset($http_response_header) ? $http_response_header : array();
-    if ($fp) { fclose($fp); }
+    /* Die Kopfzeilen kommen aus stream_get_meta_data(), nicht aus der
+     * Zauber-Variable des HTTP-Wrappers (C10): PHP 8.5 meldet schon deren
+     * blosse Erwaehnung als verfallen, auch hinter einer Wache (gemessen mit
+     * php -l unter 8.5.11). Der Weg traegt von 7.4 bis 8.5. */
+    $kopf = array();
+    if ($fp) {
+        $meta = stream_get_meta_data($fp);
+        if (isset($meta['wrapper_data']) && is_array($meta['wrapper_data'])) { $kopf = $meta['wrapper_data']; }
+        fclose($fp);
+    }
     restore_error_handler();
+    @ini_set('default_socket_timeout', (string) $frist_alt);
     return $kopf;
 }
 
@@ -1211,9 +1825,14 @@ function dk_bild_digest_fern($bild)
                 $ctx = stream_context_create(array('http' => array(
                     'timeout' => 8, 'ignore_errors' => true, 'follow_location' => 0,
                     'user_agent' => 'LoxBerry-Docker-NG')));
+                // 'timeout' im Kontext gilt nur fuers Lesen; fuer den
+                // Verbindungsaufbau gilt default_socket_timeout (C3).
+                $dk_frist_alt = ini_get('default_socket_timeout');
+                @ini_set('default_socket_timeout', '8');
                 set_error_handler(function () { return true; });
                 $antwort = file_get_contents($tu, false, $ctx);
                 restore_error_handler();
+                @ini_set('default_socket_timeout', (string) $dk_frist_alt);
                 $d = @json_decode((string) $antwort, true);
                 if (isset($d['token']))        { $merkwort = $d['token']; }
                 elseif (isset($d['access_token'])) { $merkwort = $d['access_token']; }
@@ -1271,25 +1890,52 @@ function dk_startzeit()
 
 function dk_takt()
 {
+    $p = dk_paths();
+    $ergebnis = array('gelaufen' => false, 'geschrieben' => false, 'grund' => '',
+                      'zaehler' => -1, 'schleife' => 0, 'mqtt' => 0, 'befund' => null);
+
+    /* ---- Die Sperre steht im Takt selbst (C9) ----
+     *
+     * Bis 1.3.9 sperrte nur cron/cron.01min. Der Knopf "Minutentakt jetzt
+     * ausfuehren" und postinstall.sh riefen dk_takt() an der Sperre vorbei;
+     * gemessen: Cron und Knopf gleichzeitig ergaben zwei Laeufe, der Zaehler
+     * stieg um eins, ein Herzschlag ging verloren. Jetzt nimmt dk_takt()
+     * selbst eine Sperre, nicht blockierend; wer nicht drankommt, bekommt
+     * 'BESETZT' zurueck und sagt das.
+     *
+     * Das 'e' im Modus setzt close-on-exec: die Kindprozesse (docker) erben
+     * die Sperre nicht (Fehlerklasse 3). Mit der Frist aus C3 kann ein
+     * haengendes Kind sie ohnehin nicht dauerhaft halten.
+     */
+    if (!@is_dir($p['datadir'])) { @mkdir($p['datadir'], 0755, true); }
+    $sperrdatei = @is_dir($p['datadir']) ? $p['datadir'] . '/takt.lock' : $p['datadir'] . '.takt.lock';
+    $sperre = @fopen($sperrdatei, 'ce');
+    if ($sperre === false) { $sperre = @fopen($sperrdatei, 'c'); }
+    if ($sperre === false) {
+        dk_log_gebremst('takt_sperre', 'Minutentakt: die Sperrdatei ' . $sperrdatei
+            . ' laesst sich nicht oeffnen - der Takt laeuft nicht.');
+        $ergebnis['grund'] = 'SPERRE_FEHLT';
+        return $ergebnis;
+    }
+    if (!flock($sperre, LOCK_EX | LOCK_NB)) {
+        fclose($sperre);
+        $ergebnis['grund'] = 'BESETZT';
+        return $ergebnis;
+    }
+    $ergebnis['gelaufen'] = true;
+    dk_zeitgrenze(30);
+
     dk_config_vervollstaendigen();
     $cfg = dk_config();
-    $alt = dk_zustandsdatei();
+    $alt = dk_zustandsdatei(true);
     $jetzt = time();
 
     /* ---- Eine Zeile je Systemstart ----
      *
      * Am Geraet gemessen (06.09.2026): sieben Stunden nach einem Neustart war
-     * log/plugins/dockerng/ leer - bei rund 440 Taktlaeufen. Das ist
-     * folgerichtig, denn protokolliert wird nur bei WECHSEL des Befundes und
-     * log/ liegt auf einer Ramdisk. Im Ergebnis stand der Reiter Logdateien
-     * aber wieder leer da - genau der Zustand, den 1.1.0 behoben hat, und ein
-     * leerer Reiter sieht aus wie ein Bedienfehler des Anwenders.
-     *
-     * Erkannt wird der erste Lauf daran, dass der Stand aus der Zustandsdatei
-     * AELTER ist als der Systemstart. Die Zustandsdatei liegt unter data/ und
-     * uebersteht den Neustart, das Protokoll unter log/ nicht - genau diese
-     * Ungleichzeitigkeit macht die Erkennung moeglich, ohne etwas zusaetzlich
-     * zu speichern.
+     * log/plugins/dockerng/ leer - bei rund 440 Taktlaeufen. Erkannt wird der
+     * erste Lauf daran, dass der Stand aus der Zustandsdatei AELTER ist als
+     * der Systemstart.
      */
     $start = dk_startzeit();
     if ($start > 0 && (!isset($alt['zeit']) || (int) $alt['zeit'] < $start)) {
@@ -1301,9 +1947,7 @@ function dk_takt()
     $neu = array(
         'zeit'    => $jetzt,
         // Umlaufend bei 1000: Loxone bekommt einen Analogwert, der sich bei
-        // JEDEM Takt aendert. Genau das fehlte bis 1.2.4 - die eigene
-        // Anleitung empfahl in Schritt 5, auf einen Wertwechsel zu achten,
-        // und lieferte keinen Wert, der sich zuverlaessig aendert.
+        // JEDEM Takt aendert.
         'zaehler' => (isset($alt['zaehler']) ? ((int) $alt['zaehler'] + 1) : 0) % 1000,
     );
 
@@ -1314,21 +1958,15 @@ function dk_takt()
     $neu['ok'] = $ok ? 1 : 0;
 
     /* ---- Neustartschleifen ----
-     * Der RestartCount von Docker ist ein Lebenszeitzaehler: 47 Neustarts in
-     * zwei Jahren sind gesund, +5 in zehn Minuten nicht. Brauchbar ist nur
-     * das Delta ueber die Zeit. Gezaehlt wird ueber ein gleitendes Fenster
-     * von einer Stunde.
-     *
-     * NICHT NACHGEMESSEN: ob ein 'docker restart' von Hand den Zaehler
-     * erhoeht. Die Stelle im moby-Quelltext spricht dagegen (der Zaehler
-     * steht im Zweig hinter ShouldRestart()), im Netz steht das Gegenteil.
-     * Falls doch, loest der Knopf "Portainer neu starten" bei einer Grenze
-     * von 3 erst beim dritten Mal innerhalb einer Stunde etwas aus - deshalb
-     * ist die Grenze einstellbar und die Vorgabe nicht 1.
+     * Der RestartCount von Docker ist ein Lebenszeitzaehler. Brauchbar ist nur
+     * das Delta ueber die Zeit, gezaehlt ueber ein gleitendes Fenster von
+     * einer Stunde. Ein Neustart von Hand erhoeht den Zaehler nicht (am
+     * Geraet nachgemessen 06.09.2026). Antwortet Docker nicht, bleibt das
+     * Fenster stehen - sonst finge es danach von vorn an.
      */
     $fenster = isset($alt['neustarts']) && is_array($alt['neustarts']) ? $alt['neustarts'] : array();
     $schleife = 0;
-    $neuestand = array();
+    $neuestand = $ok ? array() : $fenster;
     foreach ($z['liste'] as $c) {
         if ($c['neustarts'] < 0) { continue; }
         $name = $c['name'];
@@ -1343,17 +1981,14 @@ function dk_takt()
         }
         $neuestand[$name] = $eintrag;
         // Zweites Merkmal: laeuft seit weniger als einer Minute UND ist schon
-        // einmal neu gestartet. Ein Backoff-verzoegerter Dauerlaeufer faellt
-        // durch das reine Delta sonst irgendwann heraus.
+        // einmal neu gestartet.
         $frisch = ($c['seit'] > 0 && ($jetzt - $c['seit']) < 60 && $c['neustarts'] > 0);
         if ($eintrag['delta'] >= (int) $cfg['schleife_grenze'] || $frisch) { $schleife++; }
     }
     $neu['neustarts'] = $neuestand;
     $neu['schleife']  = $schleife;
 
-    /* ---- Plattenbelegung ----
-     * Hoechstens alle 15 Minuten: 'docker system df' laeuft Verzeichnisse ab.
-     */
+    /* ---- Plattenbelegung ---- hoechstens alle 15 Minuten. */
     $platz = isset($alt['platz']) && is_array($alt['platz']) ? $alt['platz'] : array();
     $letzte = isset($alt['platz_zeit']) ? (int) $alt['platz_zeit'] : 0;
     if ($jetzt - $letzte >= 900) {
@@ -1364,10 +1999,7 @@ function dk_takt()
     }
     $neu['platz'] = $platz;
 
-    /* ---- Abbild-Aktualisierungen ----
-     * Hoechstens einmal am Tag, und nur wenn eingeschaltet. Das geht ins
-     * Netz - dafuer braucht es eine ausdrueckliche Entscheidung.
-     */
+    /* ---- Abbild-Aktualisierungen ---- hoechstens einmal am Tag, nur wenn an. */
     $updates = isset($alt['updates']) && is_array($alt['updates']) ? $alt['updates'] : array();
     $uletzte = isset($alt['updates_zeit']) ? (int) $alt['updates_zeit'] : 0;
     if (!empty($cfg['updates_aktiv']) && $jetzt - $uletzte >= 86400) {
@@ -1377,16 +2009,27 @@ function dk_takt()
         $neu['updates_zeit'] = $uletzte;
     }
     $neu['updates'] = empty($cfg['updates_aktiv']) ? array() : $updates;
+    $neu['befund'] = isset($alt['befund']) ? (string) $alt['befund'] : '';
+    $neu['mqtt'] = isset($alt['mqtt']) && is_array($alt['mqtt']) ? $alt['mqtt'] : array();
 
-    dk_zustandsdatei_schreiben($neu);
+    /* ---- Schreiben, und das Ergebnis ansehen (C7) ----
+     * Bis 1.3.9 wurde der Rueckgabewert verworfen: bei einem schreibgeschuetzten
+     * Datenordner meldete '--einmal' "Herzschlag: 1", der Takt endete mit 0,
+     * postinstall.sh schrieb "<OK> Zustandsdatei angelegt" - und zustand.json
+     * stand still, ohne jede Protokollzeile (gemessen, Code-Pruefer T9).
+     */
+    if (!dk_zustandsdatei_schreiben($neu)) {
+        dk_log_gebremst('zustand_schreiben', sprintf(dk_t('LOG.ZUSTAND_NICHT_GESCHRIEBEN'), $p['zustand']));
+        $ergebnis['grund'] = 'NICHT_GESCHRIEBEN';
+        flock($sperre, LOCK_UN);
+        fclose($sperre);
+        return $ergebnis;
+    }
     dk_zustandsdatei(true);
 
-    /* ---- Melden ----
-     * Nur bei WECHSEL des Befundes, nicht bei jedem Takt - eine Meldung je
-     * Minute waere keine Meldung, sondern Rauschen.
-     */
+    /* ---- Melden ---- nur bei WECHSEL des Befundes. */
     $befund = dk_befund();
-    $vorher = isset($alt['befund']) ? (string) $alt['befund'] : '';
+    $vorher = $neu['befund'];
     if ($befund['kennung'] !== $vorher) {
         if ($befund['schwere'] <= 4) {
             dk_melden($befund['schwere'], $befund['text']);
@@ -1396,24 +2039,29 @@ function dk_takt()
             dk_log('Befund gewechselt: wieder in Ordnung.');
         }
         $neu['befund'] = $befund['kennung'];
-        dk_zustandsdatei_schreiben($neu);
-        dk_zustandsdatei(true);
-    } else {
-        $neu['befund'] = $vorher;
-        dk_zustandsdatei_schreiben($neu);
-        dk_zustandsdatei(true);
     }
 
     /* ---- MQTT ----
-     * Der Herzschlag geht in JEDEM Takt hinaus, auch wenn sich sonst nichts
-     * geaendert hat. Wer nur bei Aenderungen sendet, hoert bei einer Stoerung
-     * einfach auf - die zuletzt gesendeten Werte bleiben im Broker stehen,
-     * und in Loxone sieht ein toter Dienst genauso aus wie ein ruhiges Haus.
+     * Das Lebenszeichen geht in JEDEM Takt hinaus; Zustaende nur bei
+     * Aenderung und sonst hoechstens alle zehn Minuten (M6).
      */
-    $gesendet = dk_mqtt(dk_mqtt_themen());
+    dk_abo_datei_nachfuehren();
+    $neu['mqtt'] = dk_mqtt_takt($neu['mqtt'], $ok, $z);
 
-    return array('zaehler' => $neu['zaehler'], 'schleife' => $schleife,
-                 'mqtt' => $gesendet, 'befund' => $befund);
+    if (!dk_zustandsdatei_schreiben($neu)) {
+        dk_log_gebremst('zustand_schreiben', sprintf(dk_t('LOG.ZUSTAND_NICHT_GESCHRIEBEN'), $p['zustand']));
+        $ergebnis['grund'] = 'NICHT_GESCHRIEBEN';
+    } else {
+        $ergebnis['geschrieben'] = true;
+    }
+    dk_zustandsdatei(true);
+    flock($sperre, LOCK_UN);
+    fclose($sperre);
+    $ergebnis['zaehler'] = $neu['zaehler'];
+    $ergebnis['schleife'] = $schleife;
+    $ergebnis['mqtt'] = isset($neu['mqtt']['versand']['gesendet']) ? (int) $neu['mqtt']['versand']['gesendet'] : 0;
+    $ergebnis['befund'] = $befund;
+    return $ergebnis;
 }
 
 /**
@@ -1464,20 +2112,32 @@ function dk_endpunkt_probe($frisch = false)
         // dort der Regelfall und kein Befund.
         'ssl'  => array('verify_peer' => false, 'verify_peer_name' => false),
     ));
-    /* Der Fehlerbehandler wird ausgetauscht, statt sich auf @ zu verlassen.
+    /* Der Fehlerbehandler wird ausgetauscht, statt sich auf @ zu verlassen:
+     * ein nicht erreichbarer Webserver ist hier ein ERWARTETER Ausgang (-1).
      *
-     * Ein nicht erreichbarer Webserver ist hier ein ERWARTETER Ausgang, kein
-     * Fehler - genau dafuer gibt es den Stand -1. Das @ unterdrueckt die
-     * Meldung aber nur fuer die Standardbehandlung: ist ein eigener
-     * Fehlerbehandler gesetzt, sieht der sie trotzdem. Im Pruefstand
-     * rendern.py stand sie deshalb als Befund da, obwohl nichts kaputt war.
+     * SEIT 1.3.9 ueber fopen() und stream_get_meta_data() (C10): PHP 8.5
+     * meldet die Zauber-Variable fuer die Kopfzeilen als verfallen. Die Frist
+     * gilt auch fuer den Verbindungsaufbau (default_socket_timeout, C3).
      */
+    $frist_alt = ini_get('default_socket_timeout');
+    @ini_set('default_socket_timeout', '4');
     set_error_handler(function () { return true; });
-    $antwort = file_get_contents($url, false, $ctx);
+    $fp = fopen($url, 'rb', false, $ctx);
+    $antwort = false;
+    $kopf = array();
+    if ($fp) {
+        $meta = stream_get_meta_data($fp);
+        if (isset($meta['wrapper_data']) && is_array($meta['wrapper_data'])) { $kopf = $meta['wrapper_data']; }
+        $antwort = stream_get_contents($fp, 4096);
+        fclose($fp);
+    }
     restore_error_handler();
-    $kopf = isset($http_response_header) ? $http_response_header : array();
+    @ini_set('default_socket_timeout', (string) $frist_alt);
+    // Bei einer Umleitung gibt es mehrere Statuszeilen; es gilt die letzte.
     $code = 0;
-    if ($kopf && preg_match('#\s(\d{3})\s#', $kopf[0], $m)) { $code = (int) $m[1]; }
+    foreach ($kopf as $z) {
+        if (preg_match('#^HTTP/\S+\s+(\d{3})#', (string) $z, $m)) { $code = (int) $m[1]; }
+    }
 
     if ($antwort === false && $code === 0) {
         $e = array('stand' => -1, 'text' => dk_t('TEST.A_EP_KEINE_ANTWORT'), 'zeit' => time());
@@ -1588,44 +2248,65 @@ function dk_weiter($reiter, $meldung = array(), $anhang = '')
 function dk_befund()
 {
     $cfg = dk_config();
-    list($ok, $grund, $grundtext) = dk_zustand();
     if (dk_bin() === '') {
         return array('kennung' => 'KEIN_DOCKER', 'schwere' => 3,
                      'text' => dk_t('BEFUND.KEIN_DOCKER'));
     }
+    list($ok, $grund, $grundtext) = dk_zustand();
     if (!$ok) {
         return array('kennung' => 'ZUGRIFF_' . $grund, 'schwere' => 3,
                      'text' => $grundtext);
+    }
+    /* SEIT 1.3.9 (O5): der Befund folgt dem SCHLECHTESTEN Punkt, und der
+     * Minutentakt gehoert dazu. Bis 1.3.9 stand im Reiter Test "Laeuft der
+     * Minutentakt? noch nie gelaufen" und direkt darunter "Gesamtbefund: In
+     * Ordnung"; BEFUND.TAKT_NIE und TAKT_ALT kannte nur bin/healthcheck.
+     * Gesammelt wird in der Reihenfolge, gewaehlt wird die hoechste Schwere
+     * (kleinste Zahl); bei gleicher Schwere der erste Punkt. */
+    $kand = array();
+    $alter = dk_zustand_alter();
+    $frisch = dk_takt_frisch();
+    if ($alter < 0) {
+        $kand[] = array('kennung' => 'TAKT_NIE', 'schwere' => 4, 'text' => dk_t('BEFUND.TAKT_NIE'));
+    } elseif (!$frisch) {
+        $kand[] = array('kennung' => 'TAKT_ALT', 'schwere' => 3,
+                        'text' => sprintf(dk_t('BEFUND.TAKT_ALT'), (int) round($alter / 60)));
     }
     $z = dk_zaehlung();
     if ($z['fehlt'] > 0) {
         $namen = array();
         foreach ($z['wache'] as $n => $w) { if ($w === -1) { $namen[] = $n; } }
-        return array('kennung' => 'FEHLT:' . implode(',', $namen), 'schwere' => 3,
-                     'text' => sprintf(dk_t('BEFUND.FEHLT'), implode(', ', $namen)));
+        $kand[] = array('kennung' => 'FEHLT:' . implode(',', $namen), 'schwere' => 3,
+                        'text' => sprintf(dk_t('BEFUND.FEHLT'), implode(', ', $namen)));
     }
-    if ($z['schleife'] > 0) {
-        return array('kennung' => 'SCHLEIFE:' . $z['schleife'], 'schwere' => 3,
-                     'text' => sprintf(dk_t('BEFUND.SCHLEIFE'), $z['schleife']));
+    // Die Neustartschleife stammt aus dem Minutentakt - nur, solange er frisch ist (C4).
+    if ($frisch && $z['schleife'] > 0) {
+        $kand[] = array('kennung' => 'SCHLEIFE:' . $z['schleife'], 'schwere' => 3,
+                        'text' => sprintf(dk_t('BEFUND.SCHLEIFE'), $z['schleife']));
     }
     if ($z['ungesund'] > 0) {
         $namen = array();
         foreach ($z['liste'] as $c) { if ($c['gesund'] === 3) { $namen[] = $c['name']; } }
-        return array('kennung' => 'UNGESUND:' . implode(',', $namen), 'schwere' => 3,
-                     'text' => sprintf(dk_t('BEFUND.UNGESUND'), implode(', ', $namen)));
+        $kand[] = array('kennung' => 'UNGESUND:' . implode(',', $namen), 'schwere' => 3,
+                        'text' => sprintf(dk_t('BEFUND.UNGESUND'), implode(', ', $namen)));
     }
     if ($z['wache_ausfall'] > 0) {
-        return array('kennung' => 'AUSFALL:' . $z['wache_ausfall'], 'schwere' => 4,
-                     'text' => sprintf(dk_t('BEFUND.AUSFALL'), $z['wache_ausfall']));
+        $kand[] = array('kennung' => 'AUSFALL:' . $z['wache_ausfall'], 'schwere' => 4,
+                        'text' => sprintf(dk_t('BEFUND.AUSFALL'), $z['wache_ausfall']));
     }
     $zd = dk_zustandsdatei();
-    $frei = isset($zd['platz']['frei_mb']) ? (int) $zd['platz']['frei_mb'] : -1;
+    $frei = ($frisch && isset($zd['platz']['frei_mb'])) ? (int) $zd['platz']['frei_mb'] : -1;
     if ((int) $cfg['platz_grenze_mb'] > 0 && $frei >= 0 && $frei < (int) $cfg['platz_grenze_mb']) {
-        return array('kennung' => 'PLATZ:' . $frei, 'schwere' => 4,
-                     'text' => sprintf(dk_t('BEFUND.PLATZ'), $frei));
+        $kand[] = array('kennung' => 'PLATZ:' . $frei, 'schwere' => 4,
+                        'text' => sprintf(dk_t('BEFUND.PLATZ'), $frei));
     }
-    return array('kennung' => 'OK', 'schwere' => 5,
-                 'text' => sprintf(dk_t('BEFUND.OK'), $z['laeuft'], $z['gesamt']));
+    if (!$kand) {
+        return array('kennung' => 'OK', 'schwere' => 5,
+                     'text' => sprintf(dk_t('BEFUND.OK'), $z['laeuft'], $z['gesamt']));
+    }
+    $best = $kand[0];
+    foreach ($kand as $k) { if ($k['schwere'] < $best['schwere']) { $best = $k; } }
+    return $best;
 }
 
 /* ---------------- Portainer ----------------
@@ -1649,9 +2330,9 @@ function dk_befund()
  */
 function dk_container_log($name, $zeilen = 400)
 {
-    if (!preg_match('/^[A-Za-z0-9_.\-]{1,64}$/', (string) $name)) { return ''; }
+    if (!dk_name_gueltig($name)) { return ''; }
     $zeilen = max(1, min(2000, (int) $zeilen));
-    list($aus, $fehler, $code) = dk_ausfuehren('docker logs --tail ' . $zeilen . ' '
+    list($aus, $fehler, $code) = dk_ausfuehren('docker logs --tail ' . $zeilen . ' -- '
                                 . escapeshellarg($name));
     $roh = $aus . "\n" . $fehler;
     return preg_replace('/\x1B\[[0-9;]*[A-Za-z]/', '', $roh);
@@ -1659,8 +2340,236 @@ function dk_container_log($name, $zeilen = 400)
 
 function dk_portainer_log($zeilen = 400)
 {
-    $cfg = dk_config();
-    return dk_container_log($cfg['portainer_name'], $zeilen);
+    // Nur das Protokoll des EIGENEN Containers (C1) - nicht das eines
+    // fremden, der zufaellig so heisst, wie ein Feld es einmal sagte.
+    list($ok, $eigen) = dk_eigener_container();
+    if (!$ok || $eigen === null) { return ''; }
+    return dk_container_log($eigen[0], $zeilen);
+}
+
+/* ---------------- Container-Ports als Links (C11) ----------------
+ *
+ * Zusatzpunkt vom 30.09.2026. In der Containeruebersicht steht jeder
+ * veroeffentlichte Port eines laufenden Containers als Link
+ * http(s)://<Adresse des Seitenaufrufs>:<Port>/.
+ *
+ * Quelle ist die Spalte {{.Ports}} von 'docker ps' - derselbe Aufruf, der
+ * die Liste ohnehin holt. Beim Seitenaufbau wird NICHTS im Netz geprobt:
+ * ob hinter dem Port wirklich eine Weboberflaeche lauscht, weiss das
+ * Plugin nicht, und es behauptet es auch nicht.
+ */
+
+/**
+ * '0.0.0.0:9000->9000/tcp, :::9000->9000/tcp, 127.0.0.1:10300->10300/tcp,
+ *  9443/tcp' -> Liste array(ip, hport, hbis, cport, cbis, proto).
+ * Nicht veroeffentlichte Ports (ohne '->') fallen weg.
+ */
+function dk_ports_zerlegen($roh)
+{
+    $aus = array();
+    foreach (explode(',', (string) $roh) as $teil) {
+        $teil = trim($teil);
+        if (!preg_match('/^(.*):(\d{1,5})(?:-(\d{1,5}))?->(\d{1,5})(?:-(\d{1,5}))?\/(tcp|udp|sctp)\z/', $teil, $m)) {
+            continue;
+        }
+        $ip = $m[1];
+        if (strlen($ip) > 1 && $ip[0] === '[' && substr($ip, -1) === ']') { $ip = substr($ip, 1, -1); }
+        $aus[] = array('ip' => $ip, 'hport' => (int) $m[2], 'hbis' => ($m[3] !== '' ? (int) $m[3] : 0),
+                       'cport' => (int) $m[4], 'cbis' => (isset($m[5]) && $m[5] !== '' ? (int) $m[5] : 0),
+                       'proto' => $m[6]);
+    }
+    return $aus;
+}
+
+/**
+ * Der Host des Seitenaufrufs ohne Port - geprueft, nie ungeprueft
+ * uebernommen. Rueckgabe array(host fuer die Adresse, blanke Adresse fuer
+ * den Vergleich) oder array('', '') wenn er nicht taugt.
+ */
+function dk_seitenhost($roh = null)
+{
+    $h = ($roh === null) ? (isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '') : $roh;
+    if (!is_string($h) || $h === '' || strlen($h) > 260) { return array('', ''); }
+    if ($h[0] === '[') {
+        // [IPv6] oder [IPv6]:Port
+        if (!preg_match('/^\[([0-9A-Fa-f:.]{2,45})\](?::\d{1,5})?\z/', $h, $m)) { return array('', ''); }
+        if (filter_var($m[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) === false) { return array('', ''); }
+        return array('[' . $m[1] . ']', strtolower($m[1]));
+    }
+    if (!preg_match('/^([^:]+)(?::\d{1,5})?\z/', $h, $m)) { return array('', ''); }
+    $n = $m[1];
+    if (filter_var($n, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) { return array($n, $n); }
+    if (strlen($n) <= 253
+        && preg_match('/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?\z/', $n)) {
+        return array(rtrim($n, '.'), strtolower(rtrim($n, '.')));
+    }
+    return array('', '');
+}
+
+/** Ist die Bindung eine Ruecklaufadresse (127.0.0.0/8, ::1)? */
+function dk_port_ruecklauf($ip)
+{
+    return strncmp($ip, '127.', 4) === 0 || $ip === '::1' || strtolower($ip) === 'localhost'
+        || strtolower($ip) === '::ffff:127.0.0.1';
+}
+
+/**
+ * Die Ports eines Containers als fertiges, maskiertes HTML fuer die
+ * Uebersicht. $seitenhost = dk_seitenhost().
+ */
+function dk_ports_html($c, $seitenhost = null)
+{
+    if (empty($c['laeuft']) || !isset($c['ports']) || $c['ports'] === '') { return ''; }
+    list($host, $hostblank) = ($seitenhost === null) ? dk_seitenhost() : $seitenhost;
+    $eigene = array();
+    if ($hostblank !== '') { $eigene[] = $hostblank; }
+    $sa = isset($_SERVER['SERVER_ADDR']) && is_string($_SERVER['SERVER_ADDR']) ? $_SERVER['SERVER_ADDR'] : '';
+    if ($sa !== '' && filter_var($sa, FILTER_VALIDATE_IP) !== false) { $eigene[] = strtolower($sa); }
+
+    $links = array();
+    $texte = array();
+    foreach (dk_ports_zerlegen($c['ports']) as $p) {
+        $ip = strtolower($p['ip']);
+        $anzeige = ($p['ip'] !== '' ? (strpos($p['ip'], ':') !== false ? '[' . $p['ip'] . ']' : $p['ip']) . ':' : '')
+                 . $p['hport'] . ($p['hbis'] ? '-' . $p['hbis'] : '')
+                 . '->' . $p['cport'] . ($p['cbis'] ? '-' . $p['cbis'] : '') . '/' . $p['proto'];
+        if (dk_port_ruecklauf($ip)) {
+            $texte[$anzeige] = sprintf(dk_t('EINST.PORT_LOKAL'), $anzeige);
+            continue;
+        }
+        $offen = ($ip === '' || $ip === '0.0.0.0' || $ip === '::' || in_array($ip, $eigene, true));
+        if (!$offen || $p['proto'] !== 'tcp' || $p['hbis'] || $p['cbis'] || $host === ''
+            || $p['hport'] < 1 || $p['hport'] > 65535) {
+            $texte[$anzeige] = $anzeige;
+            continue;
+        }
+        $schema = in_array($p['cport'], array(443, 8443, 9443), true) ? 'https' : 'http';
+        $url = $schema . '://' . $host . ':' . $p['hport'] . '/';
+        // 0.0.0.0 und :: nennen denselben Port zweimal - ein Link genuegt.
+        $links[$url] = '<a href="' . dk_e($url) . '" target="_blank" rel="noopener">' . dk_e($url) . '</a>';
+    }
+    $teile = array_values($links);
+    foreach ($texte as $t) {
+        $teile[] = '<span class="sm-hilfe">' . dk_e($t) . '</span>';
+    }
+    return implode('<br>', $teile);
+}
+
+/* ---------------- Der eigene Container (C1, Entscheidung 9) ----------------
+ *
+ * Bis 1.3.9 erkannte das Plugin "seinen" Portainer allein am Feld
+ * portainer_name. Gemessen im Pruefstand: mit dem Namen des MG-Gateways im
+ * Feld startete der Knopf "Portainer neu starten" das Gateway neu, und die
+ * Deinstallation hielt es an und loeschte es. Ein Eintrag im Feld oder eine
+ * fremde Sicherung genuegte.
+ *
+ * Seit 1.3.9 gilt (Entscheidung des Hausherrn, 30.09.2026):
+ *   - Mit Label de.loxberry.plugin.folder=<ordner> UND
+ *     de.loxberry.plugin.name=dockerng: das ist unserer. postroot.sh legt
+ *     den Container mit beiden Labels an.
+ *   - Ohne Label (Altbestand vor 1.3.9): nur ein Container, der portainer
+ *     HEISST und aus einem Abbild portainer/portainer-* STAMMT.
+ *   - Alles andere wird nicht angefasst; stattdessen gibt es einen Hinweis
+ *     mit Namen und Grund.
+ * Dieselbe Funktion benutzen der Knopf, bin/dk_eigen.php (fuer
+ * uninstall/uninstall und postroot.sh), der Endpunkt und der Reiter Test.
+ */
+
+/** Urteil ueber EINEN Container aus 'docker inspect': array(eigen, grund, name, abbild). */
+function dk_eigen_urteil($info, $ordner)
+{
+    $name = isset($info['Name']) ? ltrim((string) $info['Name'], '/') : '';
+    $bild = isset($info['Config']['Image']) ? (string) $info['Config']['Image'] : '';
+    $l = (isset($info['Config']['Labels']) && is_array($info['Config']['Labels']))
+        ? $info['Config']['Labels'] : array();
+    $lf = isset($l['de.loxberry.plugin.folder']) ? (string) $l['de.loxberry.plugin.folder'] : '';
+    $ln = isset($l['de.loxberry.plugin.name']) ? (string) $l['de.loxberry.plugin.name'] : '';
+    if ($lf === (string) $ordner && $ln === 'dockerng') {
+        return array(true, 'LABEL', $name, $bild);
+    }
+    foreach ($l as $k => $v) {
+        if (strpos((string) $k, 'de.loxberry.plugin.') === 0) {
+            return array(false, 'FREMDES_LABEL', $name, $bild);
+        }
+    }
+    $portainerbild = preg_match('#^(docker\.io/)?portainer/portainer-[a-z0-9._-]+([:@]\S*)?\z#i', $bild) === 1;
+    if ($name === 'portainer' && $portainerbild) {
+        return array(true, 'ALTBESTAND', $name, $bild);
+    }
+    return array(false, $portainerbild ? 'FREMDER_NAME' : 'FREMDES_ABBILD', $name, $bild);
+}
+
+/**
+ * Den eigenen Container finden.
+ * Rueckgabe array(ok, eigen, fremde):
+ *   ok     false = Docker war nicht zu fragen - dann wird NICHTS angefasst;
+ *   eigen  array(name, grund LABEL|ALTBESTAND, abbild) oder null;
+ *   fremde Liste array(name, grund, abbild) - andere Portainer-Abbilder, ein
+ *          fremder Container namens portainer, ein zweiter eigener.
+ */
+function dk_eigener_container($frisch = false, $ordner = null)
+{
+    static $merk = array();
+    $ordner = ($ordner === null) ? dk_paths()['plugin'] : (string) $ordner;
+    if (!$frisch && isset($merk[$ordner])) { return $merk[$ordner]; }
+    $nicht = array(false, null, array());
+    if (dk_bin() === '') { return $merk[$ordner] = $nicht; }
+    list($ok) = dk_zustand($frisch);
+    if (!$ok) { return $merk[$ordner] = $nicht; }
+
+    // 1. Wer traegt das eigene Label? (Ein Filter ohne Leerzeichen - er
+    //    kommt unter jeder Schale heil an.)
+    list($roh, $fehler, $code) = dk_ausfuehren('docker ps -a -q --no-trunc --filter '
+        . escapeshellarg('label=de.loxberry.plugin.folder=' . $ordner));
+    if ($code !== 0) { return $merk[$ordner] = $nicht; }
+    $kand = array();
+    foreach (preg_split('/\s+/', trim($roh)) as $id) {
+        if (preg_match('/^[0-9a-f]{12,64}\z/', $id)) { $kand[] = $id; }
+    }
+    // 2. Kandidaten fuer den Altbestand und fuer den Hinweis: der Name
+    //    portainer und jedes Portainer-Abbild.
+    foreach (dk_container($frisch) as $c) {
+        if ($c['name'] === 'portainer' || stripos($c['image'], 'portainer/portainer-') !== false) {
+            $kand[] = $c['name'];
+        }
+    }
+    $kand = array_values(array_unique($kand));
+    if (!$kand) { return $merk[$ordner] = array(true, null, array()); }
+    list($js, $fehler, $code) = dk_ausfuehren('docker inspect --type container -- '
+        . implode(' ', array_map('escapeshellarg', $kand)));
+    $d = json_decode($js, true);
+    if (!is_array($d)) { return $merk[$ordner] = $nicht; }
+    $eigen = null;
+    $fremde = array();
+    $gesehen = array();
+    foreach ($d as $info) {
+        if (!is_array($info)) { continue; }
+        list($ist, $grund, $name, $bild) = dk_eigen_urteil($info, $ordner);
+        if ($name === '' || isset($gesehen[$name])) { continue; }
+        $gesehen[$name] = 1;
+        if (!$ist) { $fremde[] = array($name, $grund, $bild); continue; }
+        if ($eigen === null) {
+            $eigen = array($name, $grund, $bild);
+        } elseif ($grund === 'LABEL' && $eigen[1] !== 'LABEL') {
+            // Ein Label schlaegt den Altbestand.
+            $fremde[] = array($eigen[0], 'ZWEITER', $eigen[2]);
+            $eigen = array($name, $grund, $bild);
+        } else {
+            $fremde[] = array($name, 'ZWEITER', $bild);
+        }
+    }
+    return $merk[$ordner] = array(true, $eigen, $fremde);
+}
+
+/** Klartext zu den Containern, die nicht angefasst werden - fuer Meldungen (maskiert). */
+function dk_eigen_hinweis($fremde)
+{
+    $teile = array();
+    foreach ((array) $fremde as $f) {
+        $teile[] = sprintf(dk_t('EIGEN.FREMD_EINTRAG'), dk_e($f[0]), dk_e($f[2]),
+                           dk_e(dk_t('EIGEN.GRUND_' . $f[1])));
+    }
+    return implode(' ', $teile);
 }
 
 /**
@@ -1671,8 +2580,15 @@ function dk_portainer_log($zeilen = 400)
  * Containerprotokoll - und der Wert ueberlebt einen Neustart des Containers,
  * weil er in dessen Befehlszeile steht.
  *
- * Eigene Datei, nicht dockerng.json: ein Wert, ein Zweck. Und diese Datei
- * darf mit dem Container verschwinden, das Merkwort fuer den Endpunkt nicht.
+ * Eigene Datei, nicht dockerng.json: ein Wert, ein Zweck.
+ *
+ * BERICHTIGT in 1.3.9 (I5): hier stand, die Datei "darf mit dem Container
+ * verschwinden". Verschwunden ist sie aber mit jedem UPGRADE - der Installer
+ * raeumt config/plugins/<ordner>/ ab, der Container behaelt den Token in
+ * seiner Befehlszeile (in WSL gemessen: vor dem Upgrade vorhanden, danach
+ * fehlt). Seit 1.3.9 liegt eine Zweitschrift (0600) neben dem Ordner;
+ * preupgrade.sh sichert, postinstall.sh spielt bei einer Aktualisierung
+ * zurueck, die Deinstallation raeumt sie ab.
  */
 function dk_setup_token_vorgegeben()
 {
@@ -1716,63 +2632,58 @@ function dk_setup_token()
  */
 function dk_portainer_neustart($wartesekunden = 20)
 {
-    $cfg = dk_config();
+    /* Rueckgabe seit 1.3.9: array(neustart_ok, token, grund, name).
+     * grund: OK | NICHT_PRUEFBAR | KEIN_EIGENER | FEHLGESCHLAGEN.
+     * Neu gestartet wird NUR der eigene Container (C1) - mit '--' vor dem
+     * Namen (C6). Bis 1.3.9 nahm der Knopf den Namen aus dem Feld
+     * portainer_name und startete gemessen auch das MG-Gateway neu. */
+    list($ok, $eigen) = dk_eigener_container(true);
+    if (!$ok) { return array(false, '', 'NICHT_PRUEFBAR', ''); }
+    if ($eigen === null) { return array(false, '', 'KEIN_EIGENER', ''); }
+    $name = $eigen[0];
 
     /* Ist der Token vorgegeben (ab 1.3.0 der Regelfall), aendert er sich beim
-     * Neustart NICHT - er steht in der Befehlszeile des Containers. Auf einen
-     * anderen zu warten hiesse hier, zwanzig Sekunden lang auf etwas zu warten,
-     * das nicht kommen kann. Der Neustart oeffnet trotzdem das
-     * Fuenf-Minuten-Fenster, und genau darum geht es beim Druck auf den Knopf.
-     */
+     * Neustart NICHT - er steht in der Befehlszeile des Containers. */
     $fest = dk_setup_token_vorgegeben();
-    if ($fest !== '') {
-        list($aus, $fehler, $code) = dk_ausfuehren(
-            'docker restart ' . escapeshellarg($cfg['portainer_name']));
-        if ($code !== 0) {
-            dk_log('Container ' . $cfg['portainer_name'] . ' liess sich nicht neu starten '
-                . '(Rueckgabewert ' . $code . '): ' . ($fehler !== '' ? $fehler : 'ohne Meldung'));
-            return array(false, '');
-        }
-        dk_log('Container ' . $cfg['portainer_name'] . ' neu gestartet.');
-        dk_zustand(true);
-        dk_container(true);
-        sleep(3);
-        return array(true, $fest);
-    }
+    $vorher = ($fest !== '') ? $fest : dk_setup_token();
 
-    $vorher = dk_setup_token();
-
-    list($aus, $fehler, $code) = dk_ausfuehren(
-        'docker restart ' . escapeshellarg($cfg['portainer_name']));
+    list($aus, $fehler, $code) = dk_ausfuehren('docker restart -- ' . escapeshellarg($name));
     if ($code !== 0) {
-        dk_log('Container ' . $cfg['portainer_name'] . ' liess sich nicht neu starten '
+        dk_log('Container ' . $name . ' liess sich nicht neu starten '
             . '(Rueckgabewert ' . $code . '): ' . ($fehler !== '' ? $fehler : 'ohne Meldung'));
-        return array(false, '');
+        return array(false, '', 'FEHLGESCHLAGEN', $name);
     }
-    dk_log('Container ' . $cfg['portainer_name'] . ' neu gestartet.');
-
-    // Die Momentaufnahmen sind jetzt veraltet.
+    dk_log('Container ' . $name . ' neu gestartet (' . ($eigen[1] === 'LABEL'
+        ? 'am Label erkannt' : 'Altbestand: Name und Abbild') . ').');
     dk_zustand(true);
     dk_container(true);
+    if ($fest !== '') {
+        sleep(3);
+        return array(true, $fest, 'OK', $name);
+    }
 
     $ende = time() + max(3, (int) $wartesekunden);
     do {
         sleep(2);
         $jetzt = dk_setup_token();
         if ($jetzt !== '' && $jetzt !== $vorher) {
-            return array(true, $jetzt);
+            return array(true, $jetzt, 'OK', $name);
         }
     } while (time() < $ende);
 
     // Nichts Neues aufgetaucht. Den alten NICHT ausgeben - er ist abgelaufen.
-    return array(true, '');
+    return array(true, '', 'OK', $name);
 }
 
 function dk_portainer_laeuft()
 {
-    $cfg = dk_config();
+    // Der EIGENE Container (C1). Ob er laeuft, sagt die Containerliste:
+    // ein pausierter Container ist dort nicht 'running' (docker inspect
+    // meldete ihn als Running=true).
+    list($ok, $eigen) = dk_eigener_container();
+    if (!$ok || $eigen === null) { return false; }
     foreach (dk_container() as $c) {
-        if ($c['name'] === $cfg['portainer_name']) { return $c['laeuft'] === 1; }
+        if ($c['name'] === $eigen[0]) { return $c['laeuft'] === 1; }
     }
     return false;
 }
@@ -1798,38 +2709,143 @@ function dk_portainer_laeuft()
  */
 function dk_portainer_port()
 {
+    /* SEIT 1.3.9 (C12) aus dk_portainer_ports_ist(): die Ports, die der
+     * eigene Container WIRKLICH gebunden hat (docker inspect, auch bei einem
+     * angehaltenen Container). Rueckgabe wie bisher array(port, gemessen,
+     * schema): zuerst HTTP, sonst HTTPS, sonst die Einstellung. */
     static $p = null;
     if ($p !== null) { return $p; }
     $cfg = dk_config();
     $vorgabe = (int) $cfg['portainer_port'];
-    if (dk_bin() === '') { $p = array($vorgabe, 0, 'http'); return $p; }
-    list($ok) = dk_zustand();
-    if (!$ok) { $p = array($vorgabe, 0, 'http'); return $p; }
+    list($ok, $h, $s) = dk_portainer_ports_ist();
+    if ($ok && $h > 0) { return $p = array($h, 1, 'http'); }
+    if ($ok && $s > 0) { return $p = array($s, 1, 'https'); }
+    return $p = array($vorgabe, 0, 'http');
+}
 
-    // 'docker port <name>' listet je Zeile  9000/tcp -> 0.0.0.0:9000
-    list($aus, $fehler, $code) = dk_ausfuehren(
-        'docker port ' . escapeshellarg($cfg['portainer_name']));
-    if ($code === 0 && trim($aus) !== '') {
-        // Zuerst die Zuordnung fuer 9000/tcp, sonst die erste brauchbare.
-        $innen = 9000;
-        if (preg_match('#^9000/tcp\s*->\s*\S*?:(\d{1,5})#mi', $aus, $t)) {
-            $innen = 9000;
-        } elseif (preg_match('#^(\d{1,5})/tcp\s*->\s*\S*?:(\d{1,5})#m', $aus, $t2)) {
-            $innen = (int) $t2[1];
-            $t = array($t2[0], $t2[2]);
-        } else {
-            $t = null;
-        }
-        if ($t !== null) {
-            $gefunden = (int) $t[1];
-            if ($gefunden >= 1 && $gefunden <= 65535) {
-                $p = array($gefunden, 1, $innen === 9443 ? 'https' : 'http');
-                return $p;
+/**
+ * Die Ports des EIGENEN Containers aus 'docker inspect' (C12).
+ * Rueckgabe array(ok, http, https); -1 = nicht gebunden. ok false: kein
+ * eigener Container oder Docker nicht zu fragen.
+ */
+function dk_portainer_ports_ist()
+{
+    static $e = null;
+    if ($e !== null) { return $e; }
+    list($ok, $eigen) = dk_eigener_container();
+    if (!$ok || $eigen === null) { return $e = array(false, -1, -1); }
+    list($aus, $fehler, $code) = dk_ausfuehren('docker inspect --type container --format '
+        . escapeshellarg('{{json .HostConfig.PortBindings}}') . ' -- ' . escapeshellarg($eigen[0]));
+    $d = json_decode(trim($aus), true);
+    if ($code !== 0 || !is_array($d)) { return $e = array($code === 0 && trim($aus) === 'null', -1, -1); }
+    $h = -1;
+    $s = -1;
+    foreach (array('9000/tcp' => 'h', '9443/tcp' => 's') as $innen => $wohin) {
+        if (!isset($d[$innen]) || !is_array($d[$innen])) { continue; }
+        foreach ($d[$innen] as $b) {
+            $hp = (is_array($b) && isset($b['HostPort']) && is_string($b['HostPort'])) ? $b['HostPort'] : '';
+            if (preg_match('/^\d{1,5}\z/', $hp) && (int) $hp >= 1 && (int) $hp <= 65535) {
+                if ($wohin === 'h') { $h = (int) $hp; } else { $s = (int) $hp; }
+                break;
             }
         }
     }
-    $p = array($vorgabe, 0, 'http');
-    return $p;
+    return $e = array(true, $h, $s);
+}
+
+/**
+ * Welche TCP-Ports lauschen auf diesem Rechner? (C12)
+ * Zuerst 'ss -ltnH', sonst /proc/net/tcp und tcp6 (Zustand 0A = LISTEN).
+ * Keine Probe ins Netz. Rueckgabe array(ok, Liste der Ports).
+ */
+function dk_ports_belegt()
+{
+    $a = array();
+    $rc = 1;
+    @exec(dk_zeitvorsatz(5) . 'ss -ltnH 2>' . (DIRECTORY_SEPARATOR === '\\' ? 'NUL' : '/dev/null'), $a, $rc);
+    if ($rc === 0) {
+        $ports = array();
+        foreach ($a as $z) {
+            $f = preg_split('/\s+/', trim($z));
+            if (count($f) >= 4 && preg_match('/:(\d{1,5})\z/', $f[3], $m)) { $ports[] = (int) $m[1]; }
+        }
+        return array(true, array_values(array_unique($ports)));
+    }
+    $gelesen = false;
+    $ports = array();
+    foreach (array('/proc/net/tcp', '/proc/net/tcp6') as $f) {
+        $roh = @file_get_contents($f);
+        if ($roh === false) { continue; }
+        $gelesen = true;
+        foreach (explode("\n", $roh) as $z) {
+            $t = preg_split('/\s+/', trim($z));
+            if (count($t) < 4 || $t[3] !== '0A') { continue; }
+            $teil = explode(':', $t[1]);
+            if (count($teil) === 2 && preg_match('/^[0-9A-Fa-f]{4}\z/', $teil[1])) { $ports[] = hexdec($teil[1]); }
+        }
+    }
+    return array($gelesen, array_values(array_unique($ports)));
+}
+
+/**
+ * Den EIGENEN Portainer mit den eingestellten Ports neu anlegen (C12).
+ * Nur der eigene Container (Entscheidung 9); /opt/portainer bleibt (die
+ * Daten liegen dort, nicht im Container). Kein Ausweichen: ist ein
+ * gewuenschter Port belegt, geschieht nichts.
+ * Rueckgabe array(ok, grund, name, detail); grund OK | NICHT_PRUEFBAR |
+ * KEIN_EIGENER | PORTS | PORTS_UNKLAR | PORT_BELEGT | RM | RUN.
+ */
+function dk_portainer_neu_anlegen()
+{
+    list($ok, $eigen) = dk_eigener_container(true);
+    if (!$ok) { return array(false, 'NICHT_PRUEFBAR', '', ''); }
+    if ($eigen === null) { return array(false, 'KEIN_EIGENER', '', ''); }
+    $name = $eigen[0];
+    $bild = $eigen[2];
+    if (!dk_name_gueltig($name) || !preg_match('#^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}\z#', $bild)) {
+        return array(false, 'RM', $name, 'Name oder Abbild unbrauchbar');
+    }
+    $cfg = dk_config();
+    $h = (int) $cfg['portainer_port'];
+    $s = (int) $cfg['portainer_https_port'];
+    if ($h < 1024 || $h > 65535 || $s < 1024 || $s > 65535 || $h === $s) {
+        return array(false, 'PORTS', $name, '');
+    }
+    list(, $ist_h, $ist_s) = dk_portainer_ports_ist();
+    list($bok, $belegt) = dk_ports_belegt();
+    if (!$bok) { return array(false, 'PORTS_UNKLAR', $name, ''); }
+    foreach (array($h, $s) as $pt) {
+        // Was der eigene Container selbst haelt, wird mit ihm frei.
+        if (in_array($pt, $belegt, true) && $pt !== $ist_h && $pt !== $ist_s) {
+            return array(false, 'PORT_BELEGT', $name, (string) $pt);
+        }
+    }
+    $token = dk_setup_token_vorgegeben();
+    list($aus, $fehler, $code) = dk_ausfuehren('docker rm -f -- ' . escapeshellarg($name), 60);
+    if ($code !== 0) {
+        dk_log('Neu anlegen: der Container ' . $name . ' liess sich nicht entfernen (Rueckgabewert '
+            . $code . '): ' . ($fehler !== '' ? $fehler : 'ohne Meldung'));
+        return array(false, 'RM', $name, $fehler !== '' ? $fehler : 'rc ' . $code);
+    }
+    $befehl = 'docker run --volume=/var/run/docker.sock:/var/run/docker.sock --volume=/opt/portainer:/data'
+        . ' -p=' . $h . ':9000 -p=' . $s . ':9443 --name=' . escapeshellarg($name)
+        . ' --restart=unless-stopped --detach=true'
+        . ' --label=' . escapeshellarg('de.loxberry.plugin.folder=' . dk_paths()['plugin'])
+        . ' --label=de.loxberry.plugin.name=dockerng '
+        . escapeshellarg($bild) . ' --http-enabled'
+        . ($token !== '' ? ' --setup-token ' . escapeshellarg($token) : '');
+    list($aus, $fehler, $code) = dk_ausfuehren($befehl, 120);
+    if ($code !== 0) {
+        dk_log('Neu anlegen: der Container ' . $name . ' wurde entfernt, docker run scheiterte '
+            . '(Rueckgabewert ' . $code . '): ' . ($fehler !== '' ? $fehler : 'ohne Meldung')
+            . ' - die Daten unter /opt/portainer sind unberuehrt.');
+        return array(false, 'RUN', $name, $fehler !== '' ? $fehler : 'rc ' . $code);
+    }
+    dk_log('Container ' . $name . ' neu angelegt (HTTP ' . $h . ', HTTPS ' . $s . ', Abbild ' . $bild
+        . ', Labels gesetzt, /opt/portainer beibehalten).');
+    dk_zustand(true);
+    dk_container(true);
+    return array(true, 'OK', $name, $h . '/' . $s);
 }
 
 /* ---------------- Protokoll ----------------
@@ -1845,6 +2861,7 @@ function dk_portainer_port()
  */
 function dk_log($text)
 {
+    if (dk_log_aus()) { return false; }
     $p = dk_paths();
     if (!@is_dir($p['logdir'])) { @mkdir($p['logdir'], 0775, true); }
     // Rotation, damit eine Dauerstoerung die Ramdisk nicht vollschreibt.
@@ -1857,9 +2874,23 @@ function dk_log($text)
         '[' . date('Y-m-d H:i:s') . '] ' . $text . "\n", FILE_APPEND) !== false;
 }
 
+/**
+ * Protokoll abschalten - fuer die Aufrufe als root aus den Hakenskripten
+ * (bin/dk_eigen.php, --mqtt-leeren): eine Zeile von dort legte die
+ * Protokolldatei root-eigen an, und danach schrieb der Minutentakt als
+ * loxberry nichts mehr hinein (Installer-Pruefer J4).
+ */
+function dk_log_aus($setzen = null)
+{
+    static $aus = false;
+    if ($setzen !== null) { $aus = (bool) $setzen; }
+    return $aus;
+}
+
 /** Dieselbe Meldung hoechstens einmal je Zeitfenster. */
 function dk_log_gebremst($schluessel, $text, $sekunden = 3600)
 {
+    if (dk_log_aus()) { return; }
     $p = dk_paths();
     $f = $p['logdir'] . '/.meld_' . preg_replace('/[^a-z0-9_]/i', '', $schluessel);
     $letzte = @is_file($f) ? (int) @file_get_contents($f) : 0;
@@ -1958,24 +2989,30 @@ function dk_x($s)
  */
 function dk_lox_felder()
 {
+    /* Feld: array(Schluessel, Kachelname, MinVal, MaxVal, Beispielwert, Einheit)
+     *
+     * SEIT 1.3.9 (O8): Kachelnamen hoechstens 40 Zeichen - der Comment wird
+     * in Loxone Config zum Anzeigenamen (Regeln/07). Unit mit Einheit oder
+     * '<v>'. ZAEHLER, SCHLEIFE und PLATZFREI koennen -1 senden (Takt steht,
+     * C4) - MinVal traegt das, sonst wuerde -1 zur 0 (Regeln/07). TAKTALTER
+     * ist neu und steht hinten.
+     */
     return array(
-        array('OK',        dk_t('LOX.F_OK'),        0, 1,   1),
-        array('GESAMT',    dk_t('LOX.F_GESAMT'),    0, 999, 3),
-        array('LAEUFT',    dk_t('LOX.F_LAEUFT'),    0, 999, 3),
-        array('GESTOPPT',  dk_t('LOX.F_GESTOPPT'),  0, 999, 0),
-        array('AUSFALL',   dk_t('LOX.F_AUSFALL'),   0, 999, 0),
-        array('PAUSIERT',  dk_t('LOX.F_PAUSIERT'),  0, 999, 0),
-        array('UNGESUND',  dk_t('LOX.F_UNGESUND'),  0, 999, 0),
-        array('FEHLT',     dk_t('LOX.F_FEHLT'),     0, 999, 0),
-        array('SCHLEIFE',  dk_t('LOX.F_SCHLEIFE'),  0, 999, 0),
-        array('PORTAINER', dk_t('LOX.F_PORTAINER'), 0, 1,   1),
+        array('OK',        dk_t('LOX.F_OK'),        0, 1,   1, '<v>'),
+        array('GESAMT',    dk_t('LOX.F_GESAMT'),    0, 999, 3, '<v>'),
+        array('LAEUFT',    dk_t('LOX.F_LAEUFT'),    0, 999, 3, '<v>'),
+        array('GESTOPPT',  dk_t('LOX.F_GESTOPPT'),  0, 999, 0, '<v>'),
+        array('AUSFALL',   dk_t('LOX.F_AUSFALL'),   0, 999, 0, '<v>'),
+        array('PAUSIERT',  dk_t('LOX.F_PAUSIERT'),  0, 999, 0, '<v>'),
+        array('UNGESUND',  dk_t('LOX.F_UNGESUND'),  0, 999, 0, '<v>'),
+        array('FEHLT',     dk_t('LOX.F_FEHLT'),     0, 999, 0, '<v>'),
+        array('SCHLEIFE',  dk_t('LOX.F_SCHLEIFE'),  -1, 999, 0, '<v>'),
+        array('PORTAINER', dk_t('LOX.F_PORTAINER'), 0, 1,   1, '<v>'),
         // Der Herzschlag. Er MUSS sich bei jedem Takt aendern - daran und nur
-        // daran erkennt Loxone, dass der LoxBerry noch antwortet. Bleibt der
-        // Wert stehen, ist die Meldung faellig, auch wenn alles andere gut
-        // aussieht: bei einem Ausfall behaelt der virtuelle Eingang seinen
-        // letzten Wert, und in der App sieht dann alles normal aus.
-        array('ZAEHLER',   dk_t('LOX.F_ZAEHLER'),   0, 999, 42),
-        array('PLATZFREI', dk_t('LOX.F_PLATZFREI'), -1, 999999, 4096),
+        // daran erkennt Loxone, dass der LoxBerry noch antwortet.
+        array('ZAEHLER',   dk_t('LOX.F_ZAEHLER'),   -1, 999, 42, '<v>'),
+        array('PLATZFREI', dk_t('LOX.F_PLATZFREI'), -1, 999999, 4096, '<v> MB'),
+        array('TAKTALTER', dk_t('LOX.F_TAKTALTER'), -1, 99999999, 12, '<v> s'),
     );
 }
 
@@ -1988,11 +3025,13 @@ function dk_beispielzeile()
 {
     $teile = array('DOCKERNG');
     foreach (dk_lox_felder() as $f) {
+        if ($f[0] === 'TAKTALTER') { continue; }   // steht hinten, wie im Endpunkt
         $teile[] = $f[0] . '=' . $f[4];
     }
     $teile[] = 'GRUND=-';
     $teile[] = 'C_portainer=1';
     $teile[] = 'H_portainer=2';
+    $teile[] = 'TAKTALTER=12';
     return implode(';', $teile);
 }
 
@@ -2039,7 +3078,7 @@ function dk_xml_virtual_in_http($host, $token)
         . ' PollingTime="60">' . $crlf;
     $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
     foreach ($felder as $f) {
-        list($schluessel, $titel, $min, $max) = $f;
+        list($schluessel, $titel, $min, $max, , $einheit) = $f;
         $o .= "\t" . '<VirtualInHttpCmd Title="' . dk_x('DOCKERNG_' . $schluessel) . '"'
             . ' Comment="' . dk_x($titel) . '"'
             . ' Check="' . dk_x($schluessel . '=\v') . '"'
@@ -2049,7 +3088,7 @@ function dk_xml_virtual_in_http($host, $token)
             . ' DefVal="0"'
             . ' MinVal="' . (int) $min . '"'
             . ' MaxVal="' . (int) $max . '"'
-            . ' Unit="' . dk_x('<v.1>') . '"'
+            . ' Unit="' . dk_x($einheit) . '"'
             . ' HintText=""'
             . '/>' . $crlf;
     }
@@ -2078,23 +3117,25 @@ function dk_xml_virtual_in_http($host, $token)
     foreach (dk_wachliste() as $name) {
         $sicher = preg_replace('/[^A-Za-z0-9_]/', '_', $name);
         $o .= "\t" . '<VirtualInHttpCmd Title="' . dk_x('DOCKERNG_C_' . $sicher) . '"'
-            . ' Comment="' . dk_x(sprintf(dk_t('LOX.F_CONTAINER'), $name)) . '"'
+            // Der Containername steht im Titel; der Kommentar wird in Loxone
+            // Config zum Kachelnamen und bleibt deshalb kurz (O8).
+            . ' Comment="' . dk_x(dk_t('LOX.F_CONTAINER_KURZ')) . '"'
             . ' Check="' . dk_x('C_' . $sicher . '=\v') . '"'
             . ' Signed="true" Analog="true"'
             . ' SourceValLow="0" DestValLow="0"'
             . ' SourceValHigh="100" DestValHigh="100"'
             . ' DefVal="0" MinVal="-1" MaxVal="1"'
-            . ' Unit="' . dk_x('<v.1>') . '"'
+            . ' Unit="' . dk_x('<v>') . '"'
             . ' HintText=""'
             . '/>' . $crlf;
         $o .= "\t" . '<VirtualInHttpCmd Title="' . dk_x('DOCKERNG_H_' . $sicher) . '"'
-            . ' Comment="' . dk_x(sprintf(dk_t('LOX.F_GESUND'), $name)) . '"'
+            . ' Comment="' . dk_x(dk_t('LOX.F_GESUND_KURZ')) . '"'
             . ' Check="' . dk_x('H_' . $sicher . '=\v') . '"'
             . ' Signed="true" Analog="true"'
             . ' SourceValLow="0" DestValLow="0"'
             . ' SourceValHigh="100" DestValHigh="100"'
             . ' DefVal="0" MinVal="-1" MaxVal="3"'
-            . ' Unit="' . dk_x('<v.1>') . '"'
+            . ' Unit="' . dk_x('<v>') . '"'
             . ' HintText=""'
             . '/>' . $crlf;
     }
@@ -2147,52 +3188,113 @@ function dk_schluesselkollisionen($liste = null)
  */
 function dk_sicherung_lesen($roh)
 {
+    /* Rueckgabe seit 1.3.9: array(Konfiguration|null, Beanstandungen[],
+     * uebernommene Werte, Hinweise[]).
+     *
+     * SEIT 1.3.9 wird JEDER Wert geprueft, mit denselben Grenzen wie im
+     * Formular (C2, Bauart E). Bis dahin stand hier nur $neu[$k] = $w -
+     * gemessen unter PHP 7.4, 8.4 und 8.5: ein Token als Liste wurde
+     * uebernommen, Konfiguration UND Zweitschrift trugen die Liste, der
+     * Endpunkt nahm danach ?token=Array an, und das Formularmerkmal war
+     * hash_hmac('Array') - fuer jeden ausrechenbar. Port 99999, der Name
+     * 'x;rm -rf' und das Praefix 'a/b#' gingen roh in die Datei.
+     *
+     * Der lesbare Kopf (_hinweis, _stand) wird uebergangen, nicht
+     * beanstandet (O10, Regeln/05). Veraltete Schluessel (portainer_name)
+     * werden uebergangen und genannt, damit eine Sicherung aus 1.3.8
+     * zurueckspielbar bleibt - ein unzulaessiger Wert darin wird trotzdem
+     * beanstandet. Ein leeres Token heisst "kein Token gesichert": das
+     * geltende Merkwort bleibt, und die Meldung sagt das.
+     */
     $mangel = array();
+    $hinweis = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
-        return array(null, array(dk_t('EINST.SICH_KEIN_JSON')), 0);
+        return array(null, array(dk_t('EINST.SICH_KEIN_JSON')), 0, array());
     }
     $neu = dk_vorgaben();
     $bekannt = array_keys($neu);
     $anzahl = 0;
     foreach ($daten as $k => $w) {
-        if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(dk_t('EINST.SICH_FREMD'),
-                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+        $k = (string) $k;
+        if ($k !== '' && $k[0] === '_') { continue; }
+        if (in_array($k, dk_veraltete_schluessel(), true)) {
+            if (!dk_name_gueltig($w)) {
+                $mangel[] = sprintf(dk_t('EINST.SICH_WERT'), dk_e($k), dk_e(dk_wert_zeigen($w)),
+                                    dk_t('FEHLER.NAME'));
+            } else {
+                $hinweis[] = sprintf(dk_t('EINST.SICH_VERALTET'), dk_e($k));
+            }
             continue;
         }
-        $neu[$k] = $w;
+        if (!in_array($k, $bekannt, true)) {
+            $mangel[] = sprintf(dk_t('EINST.SICH_FREMD'), dk_e($k));
+            continue;
+        }
+        list($ok, $norm, $warum) = dk_wert_pruefen($k, $w);
+        if (!$ok) {
+            $mangel[] = sprintf(dk_t('EINST.SICH_WERT'), dk_e($k), dk_e(dk_wert_zeigen($w)), $warum);
+            continue;
+        }
+        $neu[$k] = $norm;
         $anzahl++;
     }
     if ($anzahl === 0) {
         $mangel[] = dk_t('EINST.SICH_LEER');
     }
-    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
-     *
-     * Bis hierher war die Vorgabenliste der Ausgangspunkt, und nur was in
-     * der Datei stand wurde darueber geschrieben. Eine Datei mit einem
-     * einzigen Schluessel lief damit ohne Beanstandung durch, wurde
-     * gespeichert, und alle uebrigen Einstellungen fielen auf Werk
-     * zurueck - quittiert mit "1 Wert uebernommen".
-     *
-     * Gemessen an VolkswagenID 0.9.11 am 03.09.2026 unter PHP 7.4 und 8.4:
-     * dort fiel dabei auch das Aktionstoken auf '', und jede im Miniserver
-     * eingetragene Adresse war stumm ungueltig. Am 07.09.2026 ueber den
-     * Bestand ausgerollt (30 Linien).
-     *
-     * Der Hausstandard sagt: eine halb gueltige Datei aendert gar nichts.
-     * Verglichen wird gegen die VORGABEN, nicht gegen $bekannt: was
-     * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
-     * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
+    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall
+     * (VolkswagenID 0.9.11, am 07.09.2026 ueber den Bestand ausgerollt).
+     * Verglichen wird gegen die VORGABEN. */
     $fehlend = array();
     foreach (array_keys(dk_vorgaben()) as $fk) {
         if (!array_key_exists($fk, $daten)) {
+            /* Ein Schluessel, den es erst seit 1.3.9 gibt, fehlt in jeder
+             * aelteren Sicherung. Er ist kein Mangel: der geltende Wert
+             * bleibt, und die Meldung sagt das (C12). */
+            if ($fk === 'portainer_https_port') {
+                $neu[$fk] = (int) dk_config()[$fk];
+                $hinweis[] = sprintf(dk_t('EINST.SICH_NEU_VORGABE'), dk_e($fk));
+                continue;
+            }
             $fehlend[] = $fk;
         }
     }
+    if (!$mangel && (int) $neu['portainer_port'] === (int) $neu['portainer_https_port']) {
+        $mangel[] = dk_t('FEHLER.PORT_GLEICH');
+    }
     if ($fehlend) {
         $mangel[] = sprintf(dk_t('EINST.SICH_FEHLEND'), count($fehlend),
-            htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
+            dk_e(implode(', ', $fehlend)));
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl);
+    if (!$mangel && $neu['aktionstoken'] === '') {
+        $neu['aktionstoken'] = (string) dk_config()['aktionstoken'];
+        $hinweis[] = dk_t('EINST.SICH_TOKEN_BLEIBT');
+    }
+    return array($mangel ? null : $neu, $mangel, $anzahl, $hinweis);
+}
+
+/** Ein Wert aus der Sicherung, kurz und lesbar, fuer eine Beanstandung. */
+function dk_wert_zeigen($w)
+{
+    $t = is_string($w) ? $w : (string) json_encode($w, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    return strlen($t) > 40 ? substr($t, 0, 40) . '…' : $t;
+}
+
+/**
+ * Die Sicherungsdatei bauen (O10): ein lesbarer Kopf mit '_' und alle
+ * Schluessel der Vorgaben - samt Aktionstoken, ohne den die Datei nach dem
+ * Zurueckspielen wertlos waere. Das Formularmerkmal gehoert nicht hinein.
+ */
+function dk_sicherung_bauen()
+{
+    $cfg = dk_config();
+    $aus = array(
+        '_hinweis' => dk_t('EINST.SICH_KOPF'),
+        '_stand'   => date('Y-m-d H:i:s'),
+        '_plugin'  => 'Docker NG',
+    );
+    foreach (array_keys(dk_vorgaben()) as $k) {
+        $aus[$k] = $cfg[$k];
+    }
+    return $aus;
 }

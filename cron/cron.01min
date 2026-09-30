@@ -1,7 +1,8 @@
 #!/bin/bash
 # Docker NG - Minutentakt.
 #
-# Den bin- und den Log-Pfad des Plugins setzt der LoxBerry-Installer ein.
+# Den bin-, den Log- und den Datenpfad des Plugins setzt der
+# LoxBerry-Installer ein.
 #
 # ZEILENENDEN: DIESE DATEI IST LF, NICHT CRLF.
 # Der Kernel sucht sonst einen Interpreter namens "/bin/bash\r", findet ihn
@@ -24,6 +25,28 @@
 # Logdateien anzeigt.
 VERZ="REPLACELBPBINDIR"
 PROT="REPLACELBPLOGDIR/dockerng.log"
+DATA="REPLACELBPDATADIR"
+
+# ALS ROOT VON HAND GESTARTET? (I7, Regeln/03)
+# LoxBerry ruft diese Datei als loxberry auf (/etc/cron.d/lbdefaults). Ein
+# Handlauf als root legte bis 1.3.9 cron.err und die Sperrdatei root-eigen
+# an; danach lief der Takt bis zum naechsten Neustart nicht mehr, ohne jede
+# Meldung (Installer-Pruefer J2-J4). Als root wird deshalb an loxberry
+# abgegeben; gibt es den Benutzer nicht, geschieht nichts - und nichts wird
+# als root angelegt.
+if [ "$(id -u 2>/dev/null)" = "0" ]; then
+    if id loxberry >/dev/null 2>&1; then
+        exec su -s /bin/bash loxberry -c "$0"
+    fi
+    echo "Docker NG: als root gestartet, einen Benutzer loxberry gibt es nicht - der Minutentakt laeuft nicht." >&2
+    exit 1
+fi
+
+# EINE AKTUALISIERUNG LAEUFT (I7, Entscheidung 1): solange preupgrade.sh
+# die Marke gesetzt hat, ruht der Takt - still. Zwischen dem Kopieren der
+# Cron-Datei und dem der Oberflaeche fand er sonst dk_lib.php nicht und
+# schrieb einen Fehlalarm nach cron.err. postinstall.sh raeumt die Marke ab.
+[ -e "$DATA.upgrade_laeuft" ] && exit 0
 
 if [ ! -d "$VERZ" ]; then
     mkdir -p "$(dirname "$PROT")" 2>/dev/null
@@ -42,7 +65,22 @@ fi
 # dann zwei Laeufe dieselbe Zustandsdatei, und der langsamere ueberschreibt
 # den frischen Stand des schnelleren mit seinem eigenen von vorhin.
 # flock ist nicht blockierend: wer nicht drankommt, geht kommentarlos wieder.
-exec 9>"/tmp/dockerng_takt.lock" || exit 0
+#
+# SEIT 1.3.9 (I7) liegt die Sperrdatei im Datenordner des Plugins (fehlt er,
+# daneben), nicht mehr unter /tmp: dort teilten sich zwei Installationen
+# dieselbe, und eine root-eigene Datei aus einem Handlauf sperrte den Takt
+# still. Laesst sie sich nicht oeffnen, steht das im Protokoll. Zusaetzlich
+# nimmt dk_takt() eine eigene Sperre (C9) - fuer den Knopf und postinstall.sh.
+if [ -d "$DATA" ]; then
+    SPERRE="$DATA/cron.lock"
+else
+    SPERRE="$DATA.cron.lock"
+fi
+if ! exec 9>"$SPERRE"; then
+    mkdir -p "$(dirname "$PROT")" 2>/dev/null
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Cron: die Sperrdatei $SPERRE laesst sich nicht oeffnen - der Minutentakt laeuft nicht." >> "$PROT"
+    exit 1
+fi
 flock -n 9 || exit 0
 
 # DIE FEHLERAUSGABE GEHT NACH cron.err (Hausstandard, Regeln/06).
@@ -56,6 +94,16 @@ ERR="$(dirname "$PROT")/cron.err"
 mkdir -p "$(dirname "$PROT")" 2>/dev/null
 if [ -f "$ERR" ] && [ "$(stat -c %s "$ERR" 2>/dev/null || echo 0)" -gt 262144 ]; then
     tail -n 300 "$ERR" > "$ERR.neu" 2>/dev/null && mv -f "$ERR.neu" "$ERR"
+fi
+# Ist cron.err nicht beschreibbar, scheitert die Umlenkung unten, und php
+# startet gar nicht - still (Installer-Pruefer J2). Dann steht das im
+# Protokoll, und der Takt laeuft trotzdem. Das touch frischt die
+# Aenderungszeit auf (Regeln/06, Abfahrts-Assistent 1.6.10).
+if [ -e "$ERR" ] && [ ! -w "$ERR" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Cron: $ERR ist nicht beschreibbar - Fehlermeldungen des Minutentakts gehen verloren." >> "$PROT"
+    ERR=/dev/null
+else
+    touch "$ERR" 2>/dev/null
 fi
 
 cd "$VERZ" || exit 1

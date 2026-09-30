@@ -79,6 +79,70 @@ echo "<INFO> Plugin CONFIG folder is: $PCONFIG"
 #    Die Gruppenzuordnung gehoert deshalb heraus aus dem Zweig.
 # ---------------------------------------------------------------------------
 
+# PORTS (C12, neu in 1.3.9). Ist ein Port belegt? Gefragt wird 'ss -ltnH',
+# sonst /proc/net/tcp und tcp6 (Zustand 0A = LISTEN) - keine Probe ins Netz.
+# Rueckgabe 0 belegt, 1 frei, 2 nicht pruefbar.
+dk_port_belegt()
+{
+	local p="$1" hex liste
+	if command -v ss >/dev/null 2>&1 && liste=$(ss -ltnH 2>/dev/null)
+	then
+		printf '%s\n' "$liste" | awk '{print $4}' | sed 's/.*://' | grep -qx "$p" && return 0
+		return 1
+	fi
+	if [ -r /proc/net/tcp ] || [ -r /proc/net/tcp6 ]
+	then
+		hex=$(printf '%04X' "$p")
+		cat /proc/net/tcp /proc/net/tcp6 2>/dev/null \
+			| awk -v h="$hex" '$4 == "0A" { n = split($2, a, ":"); if (toupper(a[n]) == h) f = 1 } END { exit f ? 0 : 1 }' \
+			&& return 0
+		return 1
+	fi
+	return 2
+}
+
+# Den ersten freien Port ab $1 waehlen, hoechstens 20 Versuche aufwaerts;
+# $2 ist ein schon vergebener Port, der nicht noch einmal genommen wird.
+# Ausgabe "<port> frei|ausgewichen|unpruefbar", Rueckgabe 1: keiner frei.
+dk_port_waehlen()
+{
+	local wunsch="$1" schon="$2" i p rc
+	for i in $(seq 0 19)
+	do
+		p=$((wunsch + i))
+		[ "$p" -le 65535 ] || break
+		[ "$p" = "$schon" ] && continue
+		dk_port_belegt "$p"
+		rc=$?
+		if [ "$rc" = "2" ]
+		then
+			echo "$p unpruefbar"
+			return 0
+		fi
+		if [ "$rc" = "1" ]
+		then
+			if [ "$i" = "0" ]; then echo "$p frei"; else echo "$p ausgewichen"; fi
+			return 0
+		fi
+	done
+	return 1
+}
+
+# FRIST fuer docker-Aufrufe (C3, neu in 1.3.9). Hing der Docker-Dienst, hing
+# bis dahin die ganze Installation mit - dieses Skript laeuft als root unter
+# der Sperre von plugininstall.pl. Ohne timeout laeuft der Befehl wie bisher.
+dk_frist()
+{
+	local n="$1"
+	shift
+	if command -v timeout >/dev/null 2>&1
+	then
+		timeout -k 2 "$n" "$@"
+	else
+		"$@"
+	fi
+}
+
 # ERGAENZT in 1.2.4: Rueckgabewerte auswerten.
 #
 # Bis 1.2.3 wurde weder der von curl noch der von 'sh get-docker.sh' angesehen,
@@ -98,23 +162,37 @@ then
 	# hier laeuft root, und ein relativer Pfad in einem fuer andere
 	# schreibbaren Ordner ist ein Weg, ein untergeschobenes Skript
 	# auszufuehren.
-	DKTMP=$(mktemp -d) || DKTMP=/tmp
+	#
+	# BERICHTIGT in 1.3.9 (I4): hier stand 'mktemp -d || DKTMP=/tmp'.
+	# Scheiterte mktemp, loeschte das Skript danach als root ganz /tmp -
+	# samt dem Upload-Ordner des Installers (in WSL gemessen, die Attrappe
+	# verweigerte). Jetzt: ohne eigenes Verzeichnis kein Weiter, und
+	# geloescht wird nur ein Pfad mit dem Muster von mktemp.
+	DKTMP=$(mktemp -d 2>/dev/null) || DKTMP=""
+	case "$DKTMP" in
+		"${TMPDIR:-/tmp}"/tmp.?*) ;;
+		*)
+			echo "<FAIL> Ein eigenes Arbeitsverzeichnis liess sich nicht anlegen (mktemp) -"
+			echo "<FAIL> Docker wird nicht eingerichtet. Ist /tmp voll?"
+			exit 1
+			;;
+	esac
 	if ! curl -fsSL https://get.docker.com -o "$DKTMP/get-docker.sh"
 	then
 		echo "<FAIL> Das Installationsskript von get.docker.com liess sich nicht laden."
 		echo "<FAIL> Hat der LoxBerry gerade eine Internetverbindung?"
 		echo "<INFO> Von Hand nachholen: curl -fsSL https://get.docker.com | sh"
-		rm -rf "$DKTMP"
+		rm -rf "${DKTMP:?}"
 		exit 1
 	fi
 	if ! sh "$DKTMP/get-docker.sh"
 	then
 		echo "<FAIL> Die Einrichtung von Docker ist fehlgeschlagen."
 		echo "<INFO> Die Meldungen darueber nennen den Grund."
-		rm -rf "$DKTMP"
+		rm -rf "${DKTMP:?}"
 		exit 1
 	fi
-	rm -rf "$DKTMP"
+	rm -rf "${DKTMP:?}"
 	if ! command -v docker >/dev/null 2>&1
 	then
 		echo "<FAIL> Nach der Einrichtung ist docker weiterhin nicht auffindbar."
@@ -237,7 +315,7 @@ then
 	exit 1
 fi
 
-if ! docker info >/dev/null 2>&1
+if ! dk_frist 30 docker info >/dev/null 2>&1
 then
 	echo "<FAIL> Der Docker-Dienst antwortet nicht - Portainer wird nicht eingerichtet."
 	echo "<INFO> Pruefen mit: systemctl status docker"
@@ -254,9 +332,19 @@ fi
 # Punkt an diesem Plugin, der das kann.
 #
 # ZURUECKHALTUNG, BEWUSST:
-#   - Geschrieben wird NUR, wenn noch gar keine log-opts gesetzt sind. Eine
-#     vorhandene Einstellung wird nie ueberschrieben - der Anwender hat sie
-#     dann aus einem Grund gesetzt.
+#   - Geschrieben wird NUR, wenn es noch GAR KEINEN Abschnitt log-opts gibt
+#     UND der Treiber fehlt oder json-file bzw. local ist. Eine vorhandene
+#     Einstellung wird nie ueberschrieben - der Anwender hat sie aus einem
+#     Grund gesetzt.
+#     BERICHTIGT in 1.3.9 (I3): bis dahin stand hier dasselbe, geprueft
+#     wurde aber nur log-opts.max-size. Gemessen (WSL): {"log-opts":
+#     {"max-file":"5"}} wurde zu max-file 3; {"log-driver":"journald"}
+#     bekam max-size und max-file dazu, die journald nicht kennt - dockerd
+#     prueft die Optionen gegen den Treiber, der naechste Start von Docker
+#     waere daran vermutlich gescheitert (nicht gemessen, kein Docker in
+#     WSL); die Rechte 640 wurden zu 644.
+#   - Vorher entsteht eine Kopie daemon.json.vor-dockerng (Modus erhalten),
+#     und die neue Datei behaelt den Modus der alten.
 #   - Eine vorhandene daemon.json wird ZUSAMMENGEFUEHRT, nicht ersetzt. Auf
 #     einem LoxBerry kann dort schon etwas stehen.
 #   - Docker wird NICHT neu gestartet. Das riss alle Container mit, mitten in
@@ -268,36 +356,55 @@ fi
 DJ=/etc/docker/daemon.json
 if command -v php >/dev/null 2>&1
 then
-	SCHONDA=$(php -r '$f=$argv[1];
-		$d=is_file($f)?json_decode((string)@file_get_contents($f),true):array();
-		echo (is_array($d)&&isset($d["log-opts"]["max-size"]))?"1":"0";' "$DJ" 2>/dev/null)
-	LESBAR=$(php -r '$f=$argv[1];
-		if(!is_file($f)){echo "1";exit;}
-		echo is_array(json_decode((string)@file_get_contents($f),true))?"1":"0";' "$DJ" 2>/dev/null)
+	DJLAGE=$(php -r '$f=$argv[1];
+		if(!is_file($f)){echo "NOETIG";exit;}
+		$d=json_decode((string)@file_get_contents($f),true);
+		if(!is_array($d)){echo "UNLESBAR";exit;}
+		if(array_key_exists("log-opts",$d)){echo "SCHON";exit;}
+		$t=isset($d["log-driver"])?(string)$d["log-driver"]:"";
+		echo ($t===""||$t==="json-file"||$t==="local")?"NOETIG":"TREIBER:".$t;' "$DJ" 2>/dev/null)
 
-	if [ "$SCHONDA" = "1" ]
+	if [ "$DJLAGE" = "SCHON" ]
 	then
-		echo "<OK> Die Log-Rotation von Docker ist bereits eingestellt - unangetastet gelassen."
-	elif [ "$LESBAR" != "1" ]
+		echo "<OK> In $DJ stehen bereits log-opts - unangetastet gelassen."
+		echo "<INFO> Ob die Protokolle damit begrenzt sind, zeigt der Reiter Test."
+	elif [ "$DJLAGE" = "UNLESBAR" ]
 	then
 		echo "<INFO> $DJ ist vorhanden, laesst sich aber nicht als JSON lesen."
 		echo "<INFO> Sie wird NICHT angefasst. Die Container-Protokolle bleiben damit"
 		echo "<INFO> unbegrenzt; der Reiter Test sagt das."
+	elif [ "${DJLAGE%%:*}" = "TREIBER" ]
+	then
+		echo "<INFO> In $DJ ist der Protokolltreiber ${DJLAGE#TREIBER:} eingestellt - er kennt"
+		echo "<INFO> max-size und max-file nicht. Die Datei wird NICHT angefasst."
+	elif [ "$DJLAGE" != "NOETIG" ]
+	then
+		echo "<INFO> $DJ liess sich nicht pruefen - sie wird NICHT angefasst."
 	else
-		mkdir -p /etc/docker
+		mkdir -p "$(dirname "$DJ")"
+		DJMODUS="644"
+		if [ -f "$DJ" ]
+		then
+			DJMODUS=$(stat -c %a "$DJ" 2>/dev/null || echo 644)
+			if [ ! -e "$DJ.vor-dockerng" ]
+			then
+				cp -p "$DJ" "$DJ.vor-dockerng" && echo "<INFO> Die bisherige Datei liegt als $DJ.vor-dockerng daneben."
+			fi
+		fi
+		case "$DJMODUS" in [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) ;; *) DJMODUS="644" ;; esac
 		if php -r '$f=$argv[1];
 			$d=is_file($f)?json_decode((string)@file_get_contents($f),true):array();
 			if(!is_array($d)){exit(1);}
-			if(!isset($d["log-driver"])){$d["log-driver"]="json-file";}
-			$o=isset($d["log-opts"])&&is_array($d["log-opts"])?$d["log-opts"]:array();
-			$o["max-size"]="10m"; $o["max-file"]="3";
-			$d["log-opts"]=$o;
+			$d["log-opts"]=array("max-size"=>"10m","max-file"=>"3");
 			$j=json_encode($d,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES);
 			if($j===false){exit(1);}
+			$j.="\n";
 			$t=$f.".tmp.".getmypid();
-			if(@file_put_contents($t,$j."\n")===false){exit(1);}
-			@chmod($t,0644);
-			exit(@rename($t,$f)?0:1);' "$DJ"
+			$h=@fopen($t,"c"); if($h===false){exit(1);}
+			@chmod($t,octdec($argv[2]));
+			$ok=ftruncate($h,0)&&fwrite($h,$j)===strlen($j); fclose($h);
+			if(!$ok){@unlink($t);exit(1);}
+			exit(@rename($t,$f)?0:1);' "$DJ" "$DJMODUS"
 		then
 			echo "<OK> Log-Rotation eingerichtet: max-size 10m, max-file 3 (in $DJ)."
 			echo "<INFO> Sie wirkt erst nach einem Neustart des Docker-Dienstes:"
@@ -315,26 +422,117 @@ else
 	echo "<INFO> Kein PHP gefunden - die Log-Rotation wurde nicht geprueft."
 fi
 
-vorhanden=$(docker ps -a --filter "name=^portainer$" -q)
-
-if [ -n "$vorhanden" ]
+# ---------------------------------------------------------------------------
+# Welcher Container gehoert diesem Plugin? (C1 und I2, Entscheidung 9)
+#
+# Das entscheidet bin/dk_eigen.php - DIESELBE Pruefung wie beim Knopf
+# "Portainer neu starten" und bei der Deinstallation:
+#   - mit den Labels de.loxberry.plugin.folder=<ordner> und
+#     de.loxberry.plugin.name=dockerng: unserer;
+#   - ohne Label (Altbestand vor 1.3.9): nur ein Container, der portainer
+#     heisst UND aus einem Abbild portainer/portainer-* stammt;
+#   - alles andere wird nicht angefasst.
+#
+# BERICHTIGT in 1.3.9 (I2), alles in WSL gemessen:
+#   1. Gefragt wurde fest nach dem Namen portainer. Neben einem portainer-ce
+#      des Anwenders entstand ein ZWEITER Portainer. Jetzt: gibt es einen
+#      fremden Portainer, wird keiner angelegt, und es gibt einen Hinweis.
+#   2. Ein angehaltener Portainer wurde bei JEDEM Upgrade wieder gestartet -
+#      mit AUTOMATIC_UPDATES auch ungefragt. Jetzt bleibt ein vorhandener
+#      Container, wie er ist; gestartet wird nur, was hier neu entsteht.
+#   3. Ein neu angelegter Container bekommt beide Labels.
+# ---------------------------------------------------------------------------
+case "$PDIR" in ''|*[!A-Za-z0-9_]*) PDIR_LABEL="dockerng" ;; *) PDIR_LABEL="$PDIR" ;; esac
+EIGENPHP="$PBIN/dk_eigen.php"
+LAGE=""
+LAGE_RC=2
+if [ -f "$EIGENPHP" ] && command -v php >/dev/null 2>&1
 then
-	laeuft=$(docker ps --filter "name=^portainer$" -q)
-	if [ -n "$laeuft" ]
+	LAGE=$(dk_frist 120 php "$EIGENPHP" "$PDIR_LABEL" 2>/dev/null)
+	LAGE_RC=$?
+fi
+EIGEN_NAME=""
+EIGEN_GRUND=""
+EIGEN_LAEUFT=""
+FREMDE=""
+PRUEF_FEHLER=""
+TAB=$(printf '\t')
+while IFS="$TAB" read -r dk_art dk_n dk_g dk_l dk_b
+do
+	case "$dk_art" in
+		EIGEN)  EIGEN_NAME="$dk_n"; EIGEN_GRUND="$dk_g"; EIGEN_LAEUFT="$dk_l" ;;
+		FREMD)  FREMDE="$FREMDE $dk_n ($dk_l, $dk_g)" ;;
+		FEHLER) PRUEF_FEHLER="$dk_n" ;;
+	esac
+done <<< "$LAGE"
+
+if [ "$LAGE_RC" != "0" ] || [ -n "$PRUEF_FEHLER" ]
+then
+	echo "<FAIL> Welcher Container zu diesem Plugin gehoert, liess sich nicht pruefen (${PRUEF_FEHLER:-Rueckgabewert $LAGE_RC})."
+	echo "<INFO> Es wird kein Portainer angelegt und keiner angefasst."
+	exit 1
+elif [ -n "$EIGEN_NAME" ]
+then
+	if [ "$EIGEN_LAEUFT" = "1" ]
 	then
-		echo "<OK> Der Container portainer ist vorhanden und laeuft."
-	elif docker start portainer >/dev/null 2>&1
-	then
-		echo "<OK> Der vorhandene Container portainer wurde gestartet."
+		echo "<OK> Der eigene Container $EIGEN_NAME ist vorhanden und laeuft."
 	else
-		echo "<FAIL> Der vorhandene Container portainer liess sich nicht starten."
-		echo "<INFO> Nachsehen mit: docker logs portainer"
+		echo "<INFO> Der eigene Container $EIGEN_NAME ist vorhanden, aber angehalten. Er wird"
+		echo "<INFO> NICHT gestartet - wer ihn angehalten hat, wollte das. Starten: in Portainer"
+		echo "<INFO> oder mit  docker start $EIGEN_NAME"
 	fi
-	echo "<INFO> Ein vorhandener Container wird NICHT ersetzt - eigene Einstellungen"
-	echo "<INFO> bleiben damit erhalten. Wer die Vorgaben dieses Plugins will,"
-	echo "<INFO> entfernt ihn vorher von Hand:  docker rm -f portainer"
+	if [ "$EIGEN_GRUND" = "ALTBESTAND" ]
+	then
+		echo "<INFO> Er traegt noch keine Labels (angelegt vor 1.3.9) und wird am Namen portainer"
+		echo "<INFO> und am Abbild portainer/portainer-* erkannt. Er wird NICHT ersetzt."
+	fi
+	if [ -n "$FREMDE" ]
+	then
+		echo "<INFO> Weitere Portainer-Container, die dieses Plugin nicht anfasst:$FREMDE"
+	fi
+elif [ -n "$FREMDE" ]
+then
+	echo "<INFO> Es gibt bereits Portainer-Container, die nicht zu diesem Plugin gehoeren:$FREMDE"
+	echo "<INFO> Es wird KEIN zweiter angelegt - zwei Portainer streiten um die Ports 9000"
+	echo "<INFO> und 9443. Der Reiter Einstellungen nennt je Container den Grund."
 else
-	if ! docker pull portainer/portainer-ce:latest
+	# Ports (C12): die Einstellung, bei Belegung der naechste freie. Nur hier,
+	# beim NEUANLEGEN - ein bestehender eigener Container behaelt seine Ports.
+	W_HTTP=9000
+	W_HTTPS=9443
+	if [ -f "$PBIN/dk_ports.php" ] && command -v php >/dev/null 2>&1
+	then
+		WUNSCH=$(dk_frist 60 php "$PBIN/dk_ports.php" lesen 2>/dev/null)
+		case "$WUNSCH" in
+			*[!0-9\ ]*|'') ;;
+			*\ *) W_HTTP="${WUNSCH%% *}"; W_HTTPS="${WUNSCH##* }" ;;
+		esac
+	fi
+	if [ "$W_HTTP" -lt 1024 ] || [ "$W_HTTP" -gt 65535 ] || [ "$W_HTTPS" -lt 1024 ] || [ "$W_HTTPS" -gt 65535 ] || [ "$W_HTTP" = "$W_HTTPS" ]
+	then
+		echo "<WARNING> Die eingestellten Ports ($W_HTTP, $W_HTTPS) sind unzulaessig - es gelten 9000 und 9443."
+		W_HTTP=9000
+		W_HTTPS=9443
+	fi
+	if ! WAHL_HTTP=$(dk_port_waehlen "$W_HTTP" "")
+	then
+		echo "<FAIL> Fuer HTTP ist keiner der Ports $W_HTTP bis $((W_HTTP + 19)) frei. Portainer wird NICHT angelegt."
+		echo "<INFO> In den Einstellungen des Plugins einen anderen Port eintragen und das Plugin noch einmal installieren."
+		exit 1
+	fi
+	HTTP_PORT="${WAHL_HTTP%% *}"
+	if ! WAHL_HTTPS=$(dk_port_waehlen "$W_HTTPS" "$HTTP_PORT")
+	then
+		echo "<FAIL> Fuer HTTPS ist keiner der Ports $W_HTTPS bis $((W_HTTPS + 19)) frei. Portainer wird NICHT angelegt."
+		echo "<INFO> In den Einstellungen des Plugins einen anderen Port eintragen und das Plugin noch einmal installieren."
+		exit 1
+	fi
+	HTTPS_PORT="${WAHL_HTTPS%% *}"
+	case "$WAHL_HTTP $WAHL_HTTPS" in
+		*unpruefbar*) echo "<INFO> Ob die Ports frei sind, liess sich nicht pruefen (weder ss noch /proc/net/tcp) - es gelten die eingestellten." ;;
+	esac
+
+	if ! dk_frist 900 docker pull portainer/portainer-ce:latest
 	then
 		echo "<FAIL> Das Abbild portainer/portainer-ce:latest liess sich nicht laden."
 		echo "<INFO> Hat der LoxBerry gerade eine Internetverbindung?"
@@ -367,28 +565,43 @@ else
 	SETUPTOKEN=$(tr -dc 'a-zA-Z0-9' </dev/urandom 2>/dev/null | head -c 24)
 	[ ${#SETUPTOKEN} -ge 16 ] || SETUPTOKEN=""
 
-	GRUND="--volume=/var/run/docker.sock:/var/run/docker.sock --volume=/opt/portainer:/data -p=9000:9000 -p=9443:9443 --name=portainer --restart=unless-stopped --detach=true"
+	GRUND="--volume=/var/run/docker.sock:/var/run/docker.sock --volume=/opt/portainer:/data -p=$HTTP_PORT:9000 -p=$HTTPS_PORT:9443 --name=portainer --restart=unless-stopped --detach=true"
+	# Die Labels, an denen das Plugin seinen Container erkennt (C1).
+	LABELS="--label=de.loxberry.plugin.folder=$PDIR_LABEL --label=de.loxberry.plugin.name=dockerng"
 	ANGELEGT=0
 	if [ -n "$SETUPTOKEN" ]
 	then
-		if docker run $GRUND portainer/portainer-ce:latest --http-enabled --setup-token "$SETUPTOKEN" >/dev/null 2>&1
+		if dk_frist 300 docker run $GRUND $LABELS portainer/portainer-ce:latest --http-enabled --setup-token "$SETUPTOKEN" >/dev/null 2>&1
 		then
 			ANGELEGT=1
-			echo "<OK> Container portainer angelegt (Port 9000, HTTPS 9443, Token vorgegeben)."
-			# Der Token ist ein Geheimnis: 0600, und er gehoert loxberry, damit
-			# die Oberflaeche ihn lesen kann. Er liegt NICHT in dockerng.json -
-			# ein Wert, ein Zweck, und diese Datei ueberlebt bewusst anders.
+			echo "<OK> Container portainer angelegt (Port $HTTP_PORT, HTTPS $HTTPS_PORT, Token vorgegeben, Labels gesetzt)."
+			# Der Token ist ein Geheimnis: 0600 schon beim Anlegen (umask), und er
+			# gehoert loxberry, damit die Oberflaeche ihn lesen kann. Er liegt
+			# NICHT in dockerng.json - ein Wert, ein Zweck.
+			# BERICHTIGT in 1.3.9 (I5): hier stand, diese Datei "ueberlebt bewusst
+			# anders". Sie ueberlebte kein Upgrade - der Installer raeumt den
+			# Konfigurationsordner ab. Deshalb liegt daneben eine Zweitschrift
+			# (0600), die preupgrade.sh erneuert, postinstall.sh bei einer
+			# Aktualisierung zurueckspielt und die Deinstallation abraeumt.
 			if [ -n "$PCONFIG" ] && [ -d "$PCONFIG" ]
 			then
-				printf '%s' "$SETUPTOKEN" > "$PCONFIG/setup_token"
+				( umask 077 && printf '%s' "$SETUPTOKEN" > "$PCONFIG/setup_token" )
 				chmod 600 "$PCONFIG/setup_token"
 				chown loxberry:loxberry "$PCONFIG/setup_token" 2>/dev/null
+				STB="$(dirname "$PCONFIG")/$PDIR.backup.setup_token"
+				( umask 077 && printf '%s' "$SETUPTOKEN" > "$STB" )
+				chmod 600 "$STB"
+				chown loxberry:loxberry "$STB" 2>/dev/null
 				echo "<INFO> Der Einrichtungstoken steht im Reiter Einstellungen der Plugin-Seite."
 			fi
 		else
 			# Aufraeumen: ein halb angelegter Container mit dem Namen portainer
-			# wuerde den zweiten Versuch scheitern lassen.
-			docker rm -f portainer >/dev/null 2>&1
+			# wuerde den zweiten Versuch scheitern lassen. Entfernt wird er nur,
+			# wenn er das eigene Label traegt - also eben hier entstand.
+			if [ "$(dk_frist 30 docker inspect --format '{{index .Config.Labels "de.loxberry.plugin.folder"}}' portainer 2>/dev/null)" = "$PDIR_LABEL" ]
+			then
+				dk_frist 30 docker rm -f portainer >/dev/null 2>&1
+			fi
 			echo "<INFO> Diese Fassung von Portainer kennt --setup-token offenbar nicht."
 			echo "<INFO> Es wird ohne ihn erneut versucht; der Token steht dann wie bisher"
 			echo "<INFO> im Containerprotokoll und wird von der Plugin-Seite dort abgelesen."
@@ -397,14 +610,33 @@ else
 
 	if [ "$ANGELEGT" = "0" ]
 	then
-		if docker run $GRUND portainer/portainer-ce:latest --http-enabled
+		if dk_frist 300 docker run $GRUND $LABELS portainer/portainer-ce:latest --http-enabled
 		then
-			echo "<OK> Container portainer angelegt und gestartet (Port 9000, HTTPS 9443)."
+			echo "<OK> Container portainer angelegt und gestartet (Port $HTTP_PORT, HTTPS $HTTPS_PORT, Labels gesetzt)."
 		else
 			echo "<FAIL> Der Container portainer liess sich nicht anlegen."
-			echo "<INFO> Haeufigste Ursache: Port 9000 oder 9443 ist bereits belegt."
+			echo "<INFO> Haeufigste Ursache: Port $HTTP_PORT oder $HTTPS_PORT ist bereits belegt."
 			exit 1
 		fi
+	fi
+
+	# Ausgewichen? Dann den benutzten Port in Konfiguration und Zweitschrift
+	# eintragen und es laut sagen (C12).
+	if [ "$HTTP_PORT" != "$W_HTTP" ] || [ "$HTTPS_PORT" != "$W_HTTPS" ]
+	then
+		[ "$HTTP_PORT" != "$W_HTTP" ] && echo "<WARNING> Port $W_HTTP ist belegt - Portainer lauscht fuer HTTP auf Port $HTTP_PORT."
+		[ "$HTTPS_PORT" != "$W_HTTPS" ] && echo "<WARNING> Port $W_HTTPS ist belegt - Portainer lauscht fuer HTTPS auf Port $HTTPS_PORT."
+		EINTRAG=""
+		if [ -f "$PBIN/dk_ports.php" ] && command -v php >/dev/null 2>&1
+		then
+			EINTRAG=$(dk_frist 60 php "$PBIN/dk_ports.php" setzen "$HTTP_PORT" "$HTTPS_PORT" 2>/dev/null)
+		fi
+		chown loxberry:loxberry "$PCONFIG/dockerng.json" "$(dirname "$PCONFIG")/$PDIR.backup.json" "$PCONFIG/mqtt_subscriptions.cfg" 2>/dev/null
+		case "$EINTRAG" in
+			"KONFIG 1 ZWEIT 1") echo "<WARNING> Eingetragen in Konfiguration und Zweitschrift: HTTP $HTTP_PORT, HTTPS $HTTPS_PORT." ;;
+			"KONFIG 1 ZWEIT 0") echo "<WARNING> Eingetragen in die Konfiguration: HTTP $HTTP_PORT, HTTPS $HTTPS_PORT (eine Zweitschrift entsteht mit dem ersten Merkwort)." ;;
+			*) echo "<FAIL> Die benutzten Ports liessen sich NICHT in die Konfiguration eintragen - die Plugin-Seite liest sie am Container ab." ;;
+		esac
 	fi
 fi
 

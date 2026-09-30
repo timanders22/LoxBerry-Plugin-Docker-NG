@@ -29,29 +29,12 @@ PDATA="$BASE/data/plugins/$PFOLDER"
 
 echo "<INFO> Aktualisierung auf Fassung ${4:-?} - Nachpruefung:"
 
-# ---------- Der Aktualisierungsfall ----------
-# Das ist der einzige Fall, den eine Neuinstallation nie durchlaeuft: eine
-# vorhandene Konfiguration, in der die neuen Schluessel fehlen. Das Plugin
-# ergaenzt sie beim Lesen aus den Vorgaben (dk_config_normieren), aber gesagt
-# gehoert es trotzdem - der Anwender soll nicht raten, warum seine Datei
-# kleiner ist als die Beschreibung.
-CF="$BASE/config/plugins/$PFOLDER/dockerng.json"
-if [ -s "$CF" ] && command -v php >/dev/null 2>&1; then
-    FEHLEND=$(php -r '$d=@json_decode(@file_get_contents($argv[1]),true);
-        if(!is_array($d)){echo "";exit;}
-        $neu=array("wachliste","mqtt_aktiv","mqtt_praefix","melden_aktiv",
-                   "schleife_grenze","updates_aktiv","platz_grenze_mb");
-        $f=array(); foreach($neu as $k){ if(!array_key_exists($k,$d)){$f[]=$k;} }
-        echo implode(", ",$f);' "$CF" 2>/dev/null)
-    if [ -n "$FEHLEND" ]; then
-        echo "<INFO> Neue Einstellungen in dieser Fassung: $FEHLEND"
-        echo "<INFO> Sie stehen noch nicht in Ihrer Konfiguration und gelten deshalb"
-        echo "<INFO> mit ihrem Vorgabewert. ALLE neuen Funktionen sind ab Werk AUS -"
-        echo "<INFO> die Aktualisierung aendert an Ihrem Betrieb nichts."
-    else
-        echo "<OK> Die Konfiguration kennt alle Einstellungen dieser Fassung."
-    fi
-fi
+# ---------- Neue Einstellungen dieser Fassung ----------
+# ENTFALLEN in 1.3.9 (I8). Der Block stand hier und kam zu spaet: der
+# Minutentakt aus postinstall.sh hatte die Konfiguration schon
+# vervollstaendigt, "<OK> kennt alle Einstellungen" erschien immer, und bei
+# {} nannte er dagegen alle Schluessel als neu (in WSL gemessen). Bestimmt
+# wird der Hinweis jetzt in preupgrade.sh, an der alten Datei.
 
 # ---------- Ist der Minutentakt wirklich angekommen? ----------
 # Die Datei cron/cron.01min wird vom Installer nach

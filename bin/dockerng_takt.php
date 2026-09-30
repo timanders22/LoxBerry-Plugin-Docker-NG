@@ -65,9 +65,55 @@ if ($dk_gefunden === '') {
 }
 require_once $dk_gefunden;
 
+/* Ein unbekannter Schalter endet mit einer Antwort, statt still den Takt
+ * zu fahren (Regeln/03). */
+foreach ($argv as $dk_i => $dk_a) {
+    if ($dk_i === 0 || strncmp((string) $dk_a, '--', 2) !== 0) { continue; }
+    if (!in_array($dk_a, array('--einmal', '--mqtt-leeren'), true)) {
+        fwrite(STDERR, 'Unbekannter Schalter: ' . $dk_a . "\n");
+        exit(2);
+    }
+}
+
+/* --mqtt-leeren (M4, Entscheidung 3): aufgerufen aus uninstall/uninstall,
+ * als root. Leert die eigenen zurueckbehaltenen Themen unter dem
+ * eingestellten Praefix und alles, was zum Abraeumen vorgemerkt ist.
+ * Protokolliert NICHTS - eine Zeile von hier legte die Protokolldatei
+ * root-eigen an (Installer-Pruefer J4). */
+if (in_array('--mqtt-leeren', $argv, true)) {
+    dk_log_aus(true);
+    dk_zeitgrenze(10);
+    list($dk_n, $dk_f) = dk_mqtt_leeren_alles();
+    echo 'MQTT: ' . $dk_n . ' zurueckbehaltene Themen geleert'
+        . ($dk_f ? ', davon ' . $dk_f . ' nicht abgesetzt' : '') . "\n";
+    exit($dk_f ? 1 : 0);
+}
+
 $dk_laut = in_array('--einmal', $argv, true);
 
 $dk_e = dk_takt();
+
+/* Rueckgabewert (C7, C9): 0 gelaufen und geschrieben, 3 besetzt (ein
+ * anderer Takt laeuft gerade), 1 gescheitert. Bis 1.3.9 endete der Takt
+ * immer mit 0, auch wenn zustand.json nicht geschrieben war - und
+ * postinstall.sh meldete daraus "<OK> Zustandsdatei angelegt". */
+if (!$dk_e['gelaufen']) {
+    if ($dk_laut) {
+        echo $dk_e['grund'] === 'BESETZT'
+            ? "Docker NG - der Minutentakt laeuft gerade (Sperre besetzt); nichts doppelt ausgefuehrt.\n"
+            : "Docker NG - der Minutentakt konnte nicht laufen: " . $dk_e['grund'] . "\n";
+    }
+    exit($dk_e['grund'] === 'BESETZT' ? 3 : 1);
+}
+if (!$dk_e['geschrieben']) {
+    fwrite(STDERR, 'Docker NG: ' . dk_paths()['zustand'] . " liess sich nicht schreiben - "
+        . "Herzschlag und Zustand stehen still.\n");
+    if ($dk_laut) {
+        echo "Docker NG - Minutentakt GESCHEITERT: die Zustandsdatei liess sich nicht schreiben.\n";
+        echo "  Zustandsdatei   : " . dk_paths()['zustand'] . "\n";
+    }
+    exit(1);
+}
 
 if ($dk_laut) {
     $b = $dk_e['befund'];

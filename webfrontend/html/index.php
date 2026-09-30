@@ -21,8 +21,19 @@ require_once __DIR__ . '/dk_lib.php';
 header('Content-Type: text/plain; charset=utf-8');
 header('Cache-Control: no-store');
 
-$dk_cfg  = dk_config();
-$dk_soll = (string) $dk_cfg['aktionstoken'];
+/* Frist fuer docker-Aufrufe (C3): der Miniserver fragt alle 60 s. Haengt
+ * der Docker-Dienst, antwortet der Endpunkt nach der Frist mit 503, statt
+ * einen Apache-Arbeiter ohne Ende zu binden. */
+dk_zeitgrenze(8);
+
+/* dk_config(false) (C8): der unangemeldete Endpunkt legt nichts an und heilt
+ * nichts. Bis 1.3.9 stellte ein Aufruf mit FALSCHEM Token die Konfiguration
+ * aus der Zweitschrift wieder her - vor der Tokenpruefung (gemessen: 403,
+ * danach lag dockerng.json neu da, samt Protokollzeile). Ist die Datei
+ * unbrauchbar, liest dk_config(false) die Zweitschrift nur, damit die
+ * Adressen im Miniserver weiter tragen. */
+$dk_cfg  = dk_config(false);
+$dk_soll = is_string($dk_cfg['aktionstoken']) ? $dk_cfg['aktionstoken'] : '';
 
 /* Der Parameter wird ZUERST auf seinen Typ geprueft.
  *
@@ -45,7 +56,7 @@ $dk_ist = (isset($_GET['token']) && is_string($_GET['token'])) ? $_GET['token'] 
  * Weg traegt, ohne alle 300 Sekunden zusaetzlich drei docker-Prozesse zu
  * starten.
  */
-$dk_selftest = isset($_GET['selftest']) && (string) $_GET['selftest'] === '1';
+$dk_selftest = isset($_GET['selftest']) && is_string($_GET['selftest']) && $_GET['selftest'] === '1';
 
 if ($dk_soll === '') {
     // Faellt geschlossen aus: ohne gesetztes Merkwort wird abgewiesen, nicht
@@ -72,7 +83,8 @@ if ($dk_selftest) {
 
 /* Positivliste: alles andere wird abgewiesen, nicht zurechtgebogen. */
 $dk_erlaubt = array('status', 'container', 'liste', 'roh');
-$dk_aktion  = isset($_GET['aktion']) ? (string) $_GET['aktion'] : 'status';
+// is_string ZUERST: ein Feld wird nicht zu "Array", sondern abgewiesen.
+$dk_aktion  = !isset($_GET['aktion']) ? 'status' : (is_string($_GET['aktion']) ? $_GET['aktion'] : '?');
 if (!in_array($dk_aktion, $dk_erlaubt, true)) {
     http_response_code(400);
     echo "FEHLER;OK=0;GRUND=UNBEKANNTE_AKTION\n";
@@ -92,6 +104,32 @@ if (!in_array($dk_aktion, $dk_erlaubt, true)) {
  */
 list($dk_ok, $dk_grund, $dk_grundtext) = dk_zustand();
 $dk_da = $dk_ok ? 1 : 0;
+
+/* ---------------- Docker antwortet nicht: HTTP 503 (C5) ----------------
+ *
+ * Entscheidung 9 vom 30.09.2026 und Regeln/07: faellt die Quelle aus,
+ * antwortet der Endpunkt mit 503 und ohne Daten. Loxone behaelt dann die
+ * letzten Werte, und der Herzschlag ZAEHLER aendert sich nicht mehr - genau
+ * darauf schaut die Aenderungsueberwachung der Baustein-Liste.
+ *
+ * Bis 1.3.9 kam hier HTTP 200 mit GESAMT=0, FEHLT=<Wachliste> und
+ * C_<name>=-1 fuer jeden ueberwachten Container - dieselbe Aussage wie fuer
+ * geloeschte Container, obwohl sie womoeglich alle liefen (gemessen bei
+ * 'permission denied'). -1 heisst in diesem Plugin "nicht mehr vorhanden";
+ * das darf nur sagen, wer nachgesehen hat. */
+if (!$dk_ok) {
+    http_response_code(503);
+    if ($dk_aktion === 'roh') {
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(array('ok' => 0, 'grund' => $dk_grund, 'meldung' => $dk_grundtext,
+                               'takt_alter' => dk_zustand_alter()),
+                         JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    echo 'DOCKERNG;OK=0;GRUND=' . ($dk_grund !== '' ? $dk_grund : 'FEHLER') . "\n";
+    echo $dk_grundtext . "\n";
+    exit;
+}
 $dk_z  = dk_zaehlung();
 
 /* Der Zustand ueber die Zeit kommt aus dem Minutentakt - Herzschlag,
@@ -104,11 +142,18 @@ $dk_z  = dk_zaehlung();
  * ein Zaehler, der stillsteht, sieht in Loxone genauso aus wie ein
  * ausgefallener LoxBerry - und genau dafuer ist er da.
  */
+/* SEIT 1.3.9 (C4, Entscheidung 4): EINE Altersgrenze, der dreifache Takt
+ * (dk_takt_grenze, 180 s). Bis dahin fiel nur ZAEHLER auf -1, und erst nach
+ * 300 s; SCHLEIFE und PLATZFREI gingen ohne jede Grenze hinaus - gemessen
+ * meldete der Endpunkt eine zwei Stunden alte Neustartschleife als
+ * gegenwaertig. Jetzt gehen alle drei auf -1, und TAKTALTER steht hinten
+ * in der Zeile (Sekunden, -1 = noch nie). */
 $dk_zd     = dk_zustandsdatei();
 $dk_alter  = dk_zustand_alter();
-$dk_zaehler = ($dk_alter >= 0 && $dk_alter < 300 && isset($dk_zd['zaehler']))
-              ? (int) $dk_zd['zaehler'] : -1;
-$dk_platzfrei = isset($dk_zd['platz']['frei_mb']) ? (int) $dk_zd['platz']['frei_mb'] : -1;
+$dk_frisch = dk_takt_frisch();
+$dk_zaehler = ($dk_frisch && isset($dk_zd['zaehler'])) ? (int) $dk_zd['zaehler'] : -1;
+$dk_schleife = $dk_frisch ? (int) $dk_z['schleife'] : -1;
+$dk_platzfrei = ($dk_frisch && isset($dk_zd['platz']['frei_mb'])) ? (int) $dk_zd['platz']['frei_mb'] : -1;
 
 /* ---------------- roh ---------------- */
 if ($dk_aktion === 'roh') {
@@ -125,10 +170,10 @@ if ($dk_aktion === 'roh') {
         'pausiert'    => $dk_z['pausiert'],
         'ungesund'    => $dk_z['ungesund'],
         'fehlt'       => $dk_z['fehlt'],
-        'schleife'    => $dk_z['schleife'],
+        'schleife'    => $dk_schleife,
         'portainer'   => dk_portainer_laeuft() ? 1 : 0,
         'zaehler'     => $dk_zaehler,
-        'takt_alter'  => dk_zustand_alter(),
+        'takt_alter'  => $dk_alter,
         'platz'       => isset($dk_zd['platz']) ? $dk_zd['platz'] : array(),
         'updates'     => isset($dk_zd['updates']) ? $dk_zd['updates'] : array(),
         'wache'       => $dk_z['wache'],
@@ -165,8 +210,9 @@ if ($dk_aktion === 'liste') {
  * "laeuft nicht": eine stille Falschaussage.
  */
 if ($dk_aktion === 'container') {
-    $name = isset($_GET['name']) ? (string) $_GET['name'] : '';
-    if (!preg_match('/^[A-Za-z0-9_.\-]{1,64}$/', $name)) {
+    $name = (isset($_GET['name']) && is_string($_GET['name'])) ? $_GET['name'] : '';
+    // Das Muster, das Docker selbst vergibt (C6) - dieselbe Funktion wie ueberall.
+    if (!dk_name_gueltig($name)) {
         http_response_code(400);
         echo "FEHLER;OK=0;GRUND=NAME_UNGUELTIG\n";
         echo "Erlaubt sind Buchstaben, Ziffern, Punkt, Bindestrich und Unterstrich.\n";
@@ -220,7 +266,7 @@ $dk_zeile = sprintf('DOCKERNG;OK=%d;GESAMT=%d;LAEUFT=%d;GESTOPPT=%d;AUSFALL=%d;P
                   . ';UNGESUND=%d;FEHLT=%d;SCHLEIFE=%d;PORTAINER=%d;ZAEHLER=%d;PLATZFREI=%d;GRUND=%s',
                     $dk_da, $dk_z['gesamt'], $dk_z['laeuft'], $dk_z['gestoppt'],
                     $dk_z['ausfall'], $dk_z['pausiert'],
-                    $dk_z['ungesund'], $dk_z['fehlt'], $dk_z['schleife'],
+                    $dk_z['ungesund'], $dk_z['fehlt'], $dk_schleife,
                     dk_portainer_laeuft() ? 1 : 0,
                     $dk_zaehler, $dk_platzfrei,
                     $dk_grund !== '' ? $dk_grund : '-');
@@ -247,4 +293,7 @@ foreach ($dk_z['wache'] as $dk_name => $dk_wert) {
     $dk_g = isset($dk_nach[$dk_name]) ? $dk_nach[$dk_name]['gesund'] : -1;
     $dk_zeile .= ';H_' . preg_replace('/[^A-Za-z0-9_]/', '_', $dk_name) . '=' . (int) $dk_g;
 }
+/* TAKTALTER steht HINTEN (C4, Regeln/07: neue Felder hinten) - hinter den
+ * Stellen je Container, damit keine bestehende Befehlserkennung verrutscht. */
+$dk_zeile .= ';TAKTALTER=' . (int) $dk_alter;
 echo $dk_zeile . "\n";

@@ -3,9 +3,75 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.8 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.9 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.9 — Durchgang mit vier Prüfern (30.09.2026)
+
+Gemessen an Attrappen für docker, `ss` und das MQTT-Gateway, unter PHP 7.4 und
+8.5; kein echtes Docker, kein Gerät. Befunde mit Datei:Zeile:
+`Pruefung-Durchgang-2026-09-29/Docker-NG_BEFUNDE_UND_VERBESSERUNGEN.md`.
+
+**Nach dem Update bitte einmal tun:** die Vorlage für die virtuellen Eingänge
+neu erzeugen und importieren (`ZAEHLER` darf −1 sein, die Baustein-Liste im
+Reiter *Einbindung in Loxone* ist neu verdrahtet).
+
+**Nur noch der eigene Portainer**
+
+* Bis 1.3.8 erkannte das Plugin „seinen“ Portainer nur am frei einstellbaren
+  Namen. Stand dort der Name eines anderen Containers — etwa des Gateways von
+  MG iSMART —, startete der Knopf „Portainer neu starten“ diesen neu, und die
+  Deinstallation löschte ihn. Jetzt tragen neu angelegte Container das Label
+  des Plugins; angefasst wird nur ein Container mit Label oder der Altbestand
+  `portainer` aus einem Abbild `portainer/portainer-*`. Das Feld
+  „Containername“ entfällt.
+* Neben einem eigenen `portainer-ce` legt die Installation keinen zweiten
+  Portainer mehr an, und ein angehaltener Portainer bleibt beim Update aus.
+
+**Portainer-Ports**
+
+* HTTP- und HTTPS-Port sind einstellbar (Vorgabe 9000/9443). Ist einer beim
+  Anlegen belegt, weicht das Plugin auf den nächsten freien aus und sagt es.
+  Bisher endete dann jedes Update mit `<FAIL>`.
+* „Portainer neu anlegen“ (mit Haken) übernimmt geänderte Ports; die Daten
+  unter `/opt/portainer` bleiben.
+* Veröffentlichte Container-Ports stehen in der Übersicht als Links.
+
+**Docker hängt oder antwortet nicht**
+
+* Jeder docker-Aufruf hat eine Zeitgrenze. Hing Docker, stand der Takt bisher
+  still, bis jemand den LoxBerry neu startete — und `status/ok` blieb auf 1.
+* Antwortet Docker nicht, antwortet der Endpunkt mit 503, statt jeden Container
+  als gelöscht (`-1`) zu melden. Über MQTT bleiben die Zustände stehen, nur
+  `status/ok` geht auf 0.
+* `OK`, `SCHLEIFE`, `PLATZFREI` und `ZAEHLER` haben eine Altersgrenze (180 s);
+  `TAKTALTER` steht hinten an der Statuszeile.
+
+**MQTT**
+
+* Container-Zustände und Zählungen gehen zurückbehalten (retained) hinaus;
+  Lebenszeichen und `status/ok` bleiben flüchtig. Ein verschwundener Container
+  bekommt einmal `-`. Präfixwechsel, Abschalten und Deinstallation räumen die
+  Themen ab. Die Abodatei für das Gateway bringt das Plugin selbst mit.
+* Nur Änderungen gehen sofort hinaus, der volle Satz alle zehn Minuten: bei
+  30 Containern im Mittel etwa 13 statt 104 Datagramme je Minute.
+
+**Oberfläche und Sicherung**
+
+* „Wachliste speichern“ wirkte nie — jetzt schon.
+* Beim Zurückspielen wird jeder Wert geprüft; ein Token als Liste öffnete den
+  Endpunkt bisher für `token=Array`.
+* „Protokoll leeren“ braucht einen Haken.
+
+**Installation**
+
+* `daemon.json` des Anwenders bleibt unangetastet, wenn dort schon
+  Protokolleinstellungen stehen oder ein anderer Treiber (`journald`, `syslog`)
+  eingestellt ist. Bisher wurden sie überschrieben.
+* Eine Neuinstallation spielt keine Einstellungen einer früheren Installation
+  mehr ein (neu: `preinstall.sh`); der Einrichtungs-Token von Portainer
+  übersteht das Update.
 
 ## Neu in 1.3.7 — am Gerät nachgemessen (17.09.2026)
 

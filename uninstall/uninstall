@@ -18,32 +18,71 @@ if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
 fi
 
+case "$PFOLDER" in ''|*[!A-Za-z0-9_]*) PFOLDER=dockerng ;; esac
 CF="$BASE/config/plugins/$PFOLDER/dockerng.json"
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
+BINDIR="$BASE/bin/plugins/$PFOLDER"
 
-# ---------- Portainer anhalten und entfernen ----------
-# Der Containername steht in der Konfiguration; ohne sie gilt die Vorgabe.
-NAME="portainer"
-if [ -s "$CF" ] && command -v php >/dev/null 2>&1; then
-    GELESEN=$(php -r '$d=@json_decode(@file_get_contents($argv[1]),true);
-        $n=is_array($d)&&isset($d["portainer_name"])?(string)$d["portainer_name"]:"";
-        echo preg_match("/^[A-Za-z0-9_.\-]{1,64}$/",$n)?$n:"";' "$CF" 2>/dev/null)
-    [ -n "$GELESEN" ] && NAME="$GELESEN"
-fi
+# Frist fuer docker- und php-Aufrufe (C3): dieses Skript laeuft als root unter
+# der Sperre von plugininstall.pl; haengt dockerd, hing bis 1.3.9 die ganze
+# Deinstallation. Ohne timeout laeuft der Befehl wie bisher.
+dk_frist() {
+    n="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 2 "$n" "$@"
+    else
+        "$@"
+    fi
+}
 
+# ---------- Den EIGENEN Container anhalten und entfernen (C1, Entscheidung 9) ----------
+# BERICHTIGT in 1.3.9: bis dahin entfernte dieses Skript den Container, den das
+# Feld portainer_name nannte - gleich, wer ihn angelegt hatte. Gemessen: mit
+# dem Namen des MG-Gateways im Feld wurde das Gateway angehalten und geloescht;
+# ein portainer-ce des Anwenders ebenso, waehrend der eigene Portainer
+# weiterlief. Jetzt entscheidet bin/dk_eigen.php - dieselbe Pruefung wie beim
+# Knopf "Portainer neu starten" und in postroot.sh: Label, im Altbestand Name
+# portainer UND Abbild portainer/portainer-*. Vor jedem Namen steht '--' (C6).
+NAME=""
 if command -v docker >/dev/null 2>&1; then
-    if docker inspect "$NAME" >/dev/null 2>&1; then
+    LAGE=""
+    LAGE_RC=2
+    if [ -f "$BINDIR/dk_eigen.php" ] && command -v php >/dev/null 2>&1; then
+        LAGE=$(dk_frist 120 php "$BINDIR/dk_eigen.php" "$PFOLDER" 2>/dev/null)
+        LAGE_RC=$?
+    fi
+    EIGEN_GRUND=""
+    FREMDE=""
+    PRUEF_FEHLER=""
+    TAB=$(printf '\t')
+    while IFS="$TAB" read -r dk_art dk_n dk_g dk_l dk_b; do
+        case "$dk_art" in
+            EIGEN)  NAME="$dk_n"; EIGEN_GRUND="$dk_g" ;;
+            FREMD)  FREMDE="$FREMDE $dk_n ($dk_l, $dk_g)" ;;
+            FEHLER) PRUEF_FEHLER="$dk_n" ;;
+        esac
+    done <<< "$LAGE"
+    if [ "$LAGE_RC" != "0" ] || [ -n "$PRUEF_FEHLER" ]; then
+        NAME=""
+        echo "<FAIL> Welcher Container zu diesem Plugin gehoert, liess sich nicht pruefen"
+        echo "<FAIL> (${PRUEF_FEHLER:-Rueckgabewert $LAGE_RC}). Es wird KEIN Container angefasst."
+        echo "<INFO> Von Hand nachsehen:  docker ps -a --filter label=de.loxberry.plugin.folder=$PFOLDER"
+    elif [ -n "$NAME" ]; then
         # Wirkung nachzaehlen, nicht dem Rueckgabewert des Aufrufs glauben.
-        docker stop "$NAME" >/dev/null 2>&1
-        docker rm "$NAME" >/dev/null 2>&1
-        if docker inspect "$NAME" >/dev/null 2>&1; then
-            echo "<FAIL> Der Container $NAME liess sich NICHT entfernen."
-            echo "<INFO> Von Hand nachholen:  docker rm -f $NAME"
+        dk_frist 30 docker stop -- "$NAME" >/dev/null 2>&1
+        dk_frist 30 docker rm -- "$NAME" >/dev/null 2>&1
+        if dk_frist 30 docker inspect --type container -- "$NAME" >/dev/null 2>&1; then
+            echo "<FAIL> Der eigene Container $NAME liess sich NICHT entfernen."
+            echo "<INFO> Von Hand nachholen:  docker rm -f -- $NAME"
         else
-            echo "<OK> Container $NAME angehalten und entfernt."
+            echo "<OK> Eigener Container $NAME angehalten und entfernt ($EIGEN_GRUND)."
         fi
     else
-        echo "<INFO> Es gibt keinen Container namens $NAME - nichts zu entfernen."
+        echo "<INFO> Es gibt keinen Container, der zu diesem Plugin gehoert - nichts zu entfernen."
+    fi
+    if [ -n "$FREMDE" ]; then
+        echo "<INFO> Nicht angefasst, weil sie nicht zu diesem Plugin gehoeren:$FREMDE"
     fi
     # BERICHTIGT in 1.2.4: hier stand "docker volume rm portainer_data".
     # postroot.sh haengt Portainers Datenverzeichnis aber als HOSTPFAD ein
@@ -58,7 +97,7 @@ if command -v docker >/dev/null 2>&1; then
         echo "<INFO>   $DATENORT  (vorhanden, $(du -sh "$DATENORT" 2>/dev/null | cut -f1))"
     else
         echo "<INFO>   $DATENORT  (nicht vorhanden - offenbar anders eingerichtet)"
-        echo "<INFO> Den wirklichen Ort nennt:  docker inspect $NAME --format '{{json .Mounts}}'"
+        echo "<INFO> Den wirklichen Ort nennt:  docker inspect --format '{{json .Mounts}}' -- ${NAME:-portainer}"
     fi
     echo "<INFO> Es enthaelt Ihre Portainer-Benutzer und -Einstellungen."
     echo "<INFO> Entfernen mit:  sudo rm -rf $DATENORT"
@@ -79,6 +118,21 @@ else
     echo "<INFO> docker ist nicht vorhanden - es ist nichts anzuhalten."
 fi
 
+# ---------- Zurueckbehaltene MQTT-Themen abraeumen (M4, Entscheidung 3) ----------
+# Nur eigene Themen unter dem eingestellten Praefix und was zum Abraeumen
+# vorgemerkt war - mit leerer retain-Nutzlast ueber den UDP-Eingang des
+# Gateways. Muss VOR dem Entfernen der Konfiguration laufen (sie traegt das
+# Praefix). Protokolliert nichts (laeuft als root).
+if [ -f "$BINDIR/dockerng_takt.php" ] && command -v php >/dev/null 2>&1; then
+    MAUS=$(dk_frist 60 php "$BINDIR/dockerng_takt.php" --mqtt-leeren 2>&1)
+    MRC=$?
+    if [ "$MRC" = "0" ]; then
+        echo "<OK> $MAUS"
+    else
+        echo "<INFO> $MAUS (Rueckgabewert $MRC). Pruefen mit dem MQTT-Finder von LoxBerry."
+    fi
+fi
+
 # ---------- Geheimnis wegraeumen ----------
 # Die Sicherung enthaelt das Merkwort fuer den unangemeldeten Endpunkt, die
 # Datei setup_token den Einrichtungstoken von Portainer. Beide werden
@@ -89,10 +143,23 @@ fi
 # Flash-Controller selbst, wohin geschrieben wird (Wear-Leveling) - der alte
 # Block kann physisch stehen bleiben. Das Ueberschreiben ist deshalb eine
 # Erschwernis, keine Garantie. Der Kommentar bis 1.2.4 hat mehr behauptet.
-for DATEI in "$BK" "$CF" "$BASE/config/plugins/$PFOLDER/setup_token"; do
+# SEIT 1.3.9 dazu: die Zweitschrift des Einrichtungstokens (I5) und die
+# beiseitegelegten .alt-Dateien einer frueheren Installation (I1).
+for DATEI in "$BK" "$CF" "$BASE/config/plugins/$PFOLDER/setup_token" \
+             "$BK.neu" "$BK.alt" "$BK.neu.alt" \
+             "$BASE/config/plugins/$PFOLDER.backup.setup_token" \
+             "$BASE/config/plugins/$PFOLDER.backup.setup_token.alt"; do
     if [ -f "$DATEI" ]; then
         dd if=/dev/zero of="$DATEI" bs=1k count=8 conv=notrunc >/dev/null 2>&1
         rm -f "$DATEI" && echo "<OK> $DATEI ueberschrieben und entfernt."
+    fi
+done
+# Upgrade-Marke (I1) und Sperrdateien neben dem Datenordner (I7, C9).
+for DATEI in "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" \
+             "$BASE/data/plugins/$PFOLDER.cron.lock" \
+             "$BASE/data/plugins/$PFOLDER.takt.lock"; do
+    if [ -f "$DATEI" ]; then
+        rm -f "$DATEI" && echo "<OK> $DATEI entfernt."
     fi
 done
 

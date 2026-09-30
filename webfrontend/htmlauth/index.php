@@ -61,6 +61,7 @@ if (file_exists($dk_p['home'] . '/libs/phplib/loxberry_system.php')) {
     require_once $dk_p['home'] . '/libs/phplib/loxberry_web.php';
 }
 
+dk_zeitgrenze(15);                 // Frist fuer docker-Aufrufe (C3)
 $dk_cfg     = dk_config();
 $dk_token   = dk_token();          // erzeugt sich beim ersten Aufruf selbst
 $dk_meldung = '';
@@ -159,8 +160,7 @@ $dk_takt_ergebnis = (!empty($dk_flash['takt']) && is_array($dk_flash['takt']))
 /* Das Containerprotokoll kommt als Abfrage ueber die Adresse zurueck. */
 $dk_clog  = '';
 $dk_cname = '';
-if (isset($_GET['clog']) && is_string($_GET['clog'])
-    && preg_match('/^[A-Za-z0-9_.\-]{1,64}$/', $_GET['clog'])) {
+if (isset($_GET['clog']) && dk_name_gueltig($_GET['clog'])) {
     $dk_cname = (string) $_GET['clog'];
     $dk_clog  = dk_container_log($dk_cname, 200);
     if (trim($dk_clog) === '') { $dk_clog = dk_t('TEST.CLOG_LEER'); }
@@ -210,19 +210,31 @@ if (($_POST['download'] ?? '') === 'xml_in') {
 if (($_POST['speichern'] ?? '') === '1') {
     $dk_neu = $dk_cfg;
 
-    $dk_port = trim((string) ($_POST['portainer_port'] ?? ''));
-    if (!preg_match('/^[0-9]{1,5}$/', $dk_port) || (int) $dk_port < 1 || (int) $dk_port > 65535) {
+    $dk_port = (isset($_POST['portainer_port']) && is_string($_POST['portainer_port']))
+               ? trim($_POST['portainer_port']) : '';
+    if (!preg_match('/^[0-9]{1,5}$/', $dk_port) || (int) $dk_port < 1024 || (int) $dk_port > 65535) {
         $dk_fehler[] = dk_t('FEHLER.PORT');
     } else {
         $dk_neu['portainer_port'] = (int) $dk_port;
     }
-
-    $dk_name = trim((string) ($_POST['portainer_name'] ?? ''));
-    if (!preg_match('/^[A-Za-z0-9_.\-]{1,64}$/', $dk_name)) {
-        $dk_fehler[] = dk_t('FEHLER.NAME');
-    } else {
-        $dk_neu['portainer_name'] = $dk_name;
+    /* HTTPS-Port (C12). Fehlt das Feld (ein Formular von vor 1.3.9), bleibt
+     * der geltende Wert. */
+    if (isset($_POST['portainer_https_port'])) {
+        $dk_sport = is_string($_POST['portainer_https_port']) ? trim($_POST['portainer_https_port']) : '';
+        if (!preg_match('/^[0-9]{1,5}$/', $dk_sport) || (int) $dk_sport < 1024 || (int) $dk_sport > 65535) {
+            $dk_fehler[] = dk_t('FEHLER.PORT_HTTPS');
+        } else {
+            $dk_neu['portainer_https_port'] = (int) $dk_sport;
+        }
     }
+    if (!$dk_fehler && (int) $dk_neu['portainer_port'] === (int) $dk_neu['portainer_https_port']) {
+        $dk_fehler[] = dk_t('FEHLER.PORT_GLEICH');
+    }
+    $dk_ports_geaendert = (int) $dk_neu['portainer_port'] !== (int) $dk_cfg['portainer_port']
+        || (int) $dk_neu['portainer_https_port'] !== (int) $dk_cfg['portainer_https_port'];
+
+    /* Das Feld portainer_name gibt es seit 1.3.9 nicht mehr (C1): den
+     * eigenen Container erkennt das Plugin am Label. */
 
     $dk_tokengewuerfelt = false;
     if (isset($_POST['token_neu'])) {
@@ -230,34 +242,7 @@ if (($_POST['speichern'] ?? '') === '1') {
         $dk_tokengewuerfelt = true;
     }
 
-    /* ---- Wachliste ----
-     * Kaestchen werden per isset() gelesen. Genau deshalb hat MQTT unten ein
-     * EIGENES Formular mit eigenem Handler: ein Sammelhandler wuerde beim
-     * Absenden des einen Formulars die Haken des anderen stillschweigend
-     * nullen.
-     *
-     * 'alle' bedeutet leere Liste - das ist das Verhalten bis 1.2.4 und
-     * bleibt die Vorgabe. Sonst waere ein Anwender, der nach dem Update
-     * einmal speichert, ohne Haken zu setzen, ploetzlich ohne jede
-     * Ueberwachung - und wuesste nicht, warum.
-     */
-    if (isset($_POST['wache_gesetzt'])) {
-        if (!empty($_POST['wache_alle'])) {
-            $dk_neu['wachliste'] = array();
-        } else {
-            $dk_w = array();
-            foreach ((array) ($_POST['wache'] ?? array()) as $dk_wn) {
-                if (is_string($dk_wn) && preg_match('/^[A-Za-z0-9_.\-]{1,64}$/', $dk_wn)) {
-                    $dk_w[] = $dk_wn;
-                }
-            }
-            if (!$dk_w) {
-                $dk_fehler[] = dk_t('FEHLER.WACHE_LEER');
-            } else {
-                $dk_neu['wachliste'] = $dk_w;
-            }
-        }
-    }
+    /* Die Wachliste hat seit 1.3.9 ihren EIGENEN Handler (O1, unten). */
 
     $dk_gr = trim((string) ($_POST['schleife_grenze'] ?? ''));
     if ($dk_gr !== '') {
@@ -285,12 +270,59 @@ if (($_POST['speichern'] ?? '') === '1') {
             $dk_cfg = $dk_neu;
             $dk_token = (string) $dk_neu['aktionstoken'];
             $dk_meldung = dk_t('MELDUNG.GESPEICHERT');
+            if ($dk_ports_geaendert) {
+                $dk_meldung .= ' ' . dk_t('MELDUNG.PORTS_ERST_NEU');
+            }
             if ($dk_tokengewuerfelt) {
                 // Der Wert selbst gehoert NICHT ins Protokoll - nur die
                 // Tatsache. Ein Merkwort im Log waere ein Merkwort auf Platte.
                 dk_log('Neues Merkwort fuer den Endpunkt gewuerfelt. Alle Adressen '
                     . 'im Miniserver muessen jetzt nachgezogen werden.');
             }
+        } else {
+            $dk_fehler[] = dk_t('FEHLER.SCHREIBEN');
+        }
+    }
+    dk_weiter('settings', array('meldung' => $dk_meldung, 'fehler' => $dk_fehler));
+}
+
+/* ---------------- Speichern: Wachliste (O1) ----------------
+ *
+ * EIGENER Handler seit 1.3.9. Bis dahin schickte das Formular der Wachliste
+ * 'speichern=1' an denselben Handler wie die Konfiguration. Der verlangte
+ * Port und Namen, die in diesem Formular gar nicht stehen, beanstandete
+ * beide und speicherte nichts - gemessen unter PHP 7.4 und 8.5: die
+ * Wachliste liess sich nie einstellen. Waere die Portpruefung weggefallen,
+ * haette derselbe Handler melden_aktiv und updates_aktiv ueber isset() auf
+ * 0 gesetzt. Dieser Handler fasst NUR die Wachliste an.
+ *
+ * 'alle' bedeutet leere Liste - das Verhalten bis 1.2.4 und weiter die
+ * Vorgabe. Ein Name, der nicht ins Muster passt, wird abgewiesen und
+ * gemeldet, nicht still weggelassen.
+ */
+if (($_POST['speichern_wache'] ?? '') === '1') {
+    $dk_neu = $dk_cfg;
+    if (!empty($_POST['wache_alle'])) {
+        $dk_neu['wachliste'] = array();
+    } else {
+        $dk_w = array();
+        $dk_wroh = (isset($_POST['wache']) && is_array($_POST['wache'])) ? $_POST['wache'] : array();
+        foreach ($dk_wroh as $dk_wn) {
+            if (!dk_name_gueltig($dk_wn)) {
+                $dk_fehler[] = dk_t('FEHLER.NAME');
+                break;
+            }
+            if (!in_array($dk_wn, $dk_w, true)) { $dk_w[] = $dk_wn; }
+        }
+        if (!$dk_fehler && !$dk_w) {
+            $dk_fehler[] = dk_t('FEHLER.WACHE_LEER');
+        }
+        if (!$dk_fehler) { $dk_neu['wachliste'] = $dk_w; }
+    }
+    if (!$dk_fehler) {
+        if (dk_config_schreiben($dk_neu)) {
+            $dk_cfg = $dk_neu;
+            $dk_meldung = dk_t('MELDUNG.WACHE_GESPEICHERT');
         } else {
             $dk_fehler[] = dk_t('FEHLER.SCHREIBEN');
         }
@@ -306,7 +338,8 @@ if (($_POST['speichern_mqtt'] ?? '') === '1') {
     $dk_neu = $dk_cfg;
     $dk_neu['mqtt_aktiv'] = isset($_POST['mqtt_aktiv']) ? 1 : 0;
 
-    $dk_prae = trim((string) ($_POST['mqtt_praefix'] ?? ''));
+    $dk_prae = (isset($_POST['mqtt_praefix']) && is_string($_POST['mqtt_praefix']))
+               ? trim($_POST['mqtt_praefix']) : '';
     if (!preg_match('/^[A-Za-z0-9_\-]{1,32}$/', $dk_prae)) {
         $dk_fehler[] = dk_t('FEHLER.MQTT_PRAEFIX');
     } else {
@@ -314,9 +347,23 @@ if (($_POST['speichern_mqtt'] ?? '') === '1') {
     }
 
     if (!$dk_fehler) {
+        $dk_alt_prae  = $dk_cfg['mqtt_praefix'];
+        $dk_alt_aktiv = !empty($dk_cfg['mqtt_aktiv']);
         if (dk_config_schreiben($dk_neu)) {
             $dk_cfg = $dk_neu;
             $dk_meldung = dk_t('MELDUNG.GESPEICHERT');
+            /* Abraeumen (M4, Entscheidung 3): wechselt das Praefix oder geht
+             * MQTT aus, blieben die zurueckbehaltenen Themen sonst fuer immer
+             * im Broker stehen. Die Oberflaeche merkt sie nur vor; abgesetzt
+             * wird im naechsten Minutentakt - er ist der einzige Sender. */
+            if ($dk_alt_aktiv && (!$dk_neu['mqtt_aktiv'] || $dk_neu['mqtt_praefix'] !== $dk_alt_prae)) {
+                $dk_n = dk_mqtt_abraeumen_vormerken($dk_alt_prae);
+                if ($dk_n >= 0) {
+                    $dk_meldung .= ' ' . sprintf(dk_t('MELDUNG.ABRAEUMEN_VORGEMERKT'), $dk_n, $dk_alt_prae);
+                } else {
+                    $dk_fehler[] = dk_t('FEHLER.ABRAEUMEN');
+                }
+            }
         } else {
             $dk_fehler[] = dk_t('FEHLER.SCHREIBEN');
         }
@@ -330,12 +377,22 @@ if (($_POST['speichern_mqtt'] ?? '') === '1') {
  * er ersetzt den Gang auf die Kommandozeile.
  */
 if (isset($_POST['takt_jetzt'])) {
+    /* Die Meldung haengt am Rueckgabewert (O3). Bis 1.3.9 stand hier immer
+     * "Der Minutentakt wurde einmal von Hand ausgefuehrt" - auch wenn sich
+     * zustand.json nicht schreiben liess; die Pruefzeile darunter sagte
+     * gleichzeitig "noch nie gelaufen". Und der Takt nimmt seit 1.3.9 seine
+     * Sperre selbst (C9): laeuft gerade der Cron, sagt der Knopf das. */
     $dk_e = dk_takt();
     dk_zustandsdatei(true);
-    dk_weiter('test', array(
-        'meldung' => dk_t('MELDUNG.TAKT_GELAUFEN'),
-        'takt'    => array((int) $dk_e['zaehler'], (int) $dk_e['schleife'], (int) $dk_e['mqtt']),
-    ));
+    if ($dk_e['gelaufen'] && $dk_e['geschrieben']) {
+        dk_weiter('test', array(
+            'meldung' => dk_t('MELDUNG.TAKT_GELAUFEN'),
+            'takt'    => array((int) $dk_e['zaehler'], (int) $dk_e['schleife'], (int) $dk_e['mqtt']),
+        ));
+    }
+    $dk_warum = ($dk_e['grund'] === 'BESETZT') ? 'FEHLER.TAKT_BESETZT'
+              : (($dk_e['grund'] === 'NICHT_GESCHRIEBEN') ? 'FEHLER.TAKT_NICHT_GESCHRIEBEN' : 'FEHLER.TAKT_SPERRE');
+    dk_weiter('test', array('fehler' => array(dk_t($dk_warum))));
 }
 
 /* ---------------- Protokoll eines Containers ----------------
@@ -345,8 +402,8 @@ if (isset($_POST['takt_jetzt'])) {
  * eines zu viel, und die Ausnahme waere genau die, die man spaeter vergisst.
  */
 if (isset($_POST['containerlog'])) {
-    $dk_n = trim((string) ($_POST['clog_name'] ?? ''));
-    if (!preg_match('/^[A-Za-z0-9_.\-]{1,64}$/', $dk_n)) {
+    $dk_n = (isset($_POST['clog_name']) && is_string($_POST['clog_name'])) ? trim($_POST['clog_name']) : '';
+    if (!dk_name_gueltig($dk_n)) {
         dk_weiter('test', array('fehler' => array(dk_t('FEHLER.NAME'))));
     }
     // rawurlencode, obwohl das Muster oben nur unbedenkliche Zeichen zulaesst:
@@ -363,6 +420,11 @@ if (isset($_POST['ep_neu'])) {
 
 /* ---------------- Logdatei leeren ---------------- */
 if (isset($_POST['log_leeren'])) {
+    // Ein loeschender Knopf braucht ein Haekchen (O9, Regeln/04). Ohne
+    // Haekchen geschieht nichts, und das wird gesagt.
+    if (empty($_POST['log_bestaetigt'])) {
+        dk_weiter('log', array('fehler' => array(dk_t('FEHLER.LOG_BESTAETIGEN'))));
+    }
     // Rueckgabewert auswerten. Bis 1.2.3 stand "Das Protokoll wurde geleert."
     // auch dann da, wenn das Schreiben scheiterte.
     if (dk_log_leeren()) {
@@ -382,16 +444,25 @@ if (isset($_POST['log_leeren'])) {
 if (isset($_POST['tokenzeigen']) || isset($_POST['portainerneu'])) {
     $dk_m = array();
     if (isset($_POST['portainerneu'])) {
-        list($dk_neustart_ok, $dk_setup) = dk_portainer_neustart();
-        if (!$dk_neustart_ok) {
-            $dk_m['fehler'] = array(dk_t('FEHLER.NEUSTART'));
+        /* Nur der EIGENE Container (C1, Entscheidung 9); die Meldung nennt
+         * ihn (O2). Hat der Knopf nichts getan, sagt er warum und nennt die
+         * Container, die er nicht anfasst. */
+        list($dk_neustart_ok, $dk_setup, $dk_ngrund, $dk_nname) = dk_portainer_neustart();
+        if ($dk_ngrund === 'NICHT_PRUEFBAR') {
+            $dk_m['fehler'] = array(dk_t('FEHLER.NEUSTART_NICHT_PRUEFBAR'));
+        } elseif ($dk_ngrund === 'KEIN_EIGENER') {
+            list(, , $dk_nfremd) = dk_eigener_container();
+            $dk_m['fehler'] = array(dk_t('FEHLER.NEUSTART_KEIN_EIGENER')
+                . ($dk_nfremd ? ' ' . dk_eigen_hinweis($dk_nfremd) : ''));
+        } elseif (!$dk_neustart_ok) {
+            $dk_m['fehler'] = array(sprintf(dk_t('FEHLER.NEUSTART'), dk_e($dk_nname)));
         } elseif ($dk_setup !== '') {
-            $dk_m['meldung'] = dk_t('MELDUNG.NEUSTART_OK');
+            $dk_m['meldung'] = sprintf(dk_t('MELDUNG.NEUSTART_OK'), $dk_nname);
             $dk_m['setup']   = $dk_setup;
         } else {
             // Neustart hat geklappt, nur kein neuer Token - der Regelfall bei
             // einem bereits eingerichteten Portainer. Das ist kein Fehler.
-            $dk_m['meldung'] = dk_t('MELDUNG.NEUSTART_OHNE_TOKEN');
+            $dk_m['meldung'] = sprintf(dk_t('MELDUNG.NEUSTART_OHNE_TOKEN'), $dk_nname);
         }
     } else {
         $dk_setup = dk_setup_token();
@@ -408,13 +479,47 @@ if (isset($_POST['tokenzeigen']) || isset($_POST['portainerneu'])) {
     dk_weiter($dk_woher, $dk_m);
 }
 
+/* ---------------- Portainer neu anlegen (C12) ----------------
+ *
+ * Eine geaenderte Port-Einstellung wirkt erst, wenn der Container neu
+ * angelegt wird. Das tut dieser Knopf - nur fuer den eigenen Container,
+ * nur mit Haekchen, und /opt/portainer bleibt. */
+if (isset($_POST['portainer_neu_anlegen'])) {
+    if (empty($_POST['neu_anlegen_bestaetigt'])) {
+        dk_weiter('settings', array('fehler' => array(dk_t('FEHLER.NEU_ANLEGEN_BESTAETIGEN'))));
+    }
+    dk_zeitgrenze(120);
+    list($dk_na_ok, $dk_na_grund, $dk_na_name, $dk_na_detail) = dk_portainer_neu_anlegen();
+    $dk_m = array();
+    if ($dk_na_ok) {
+        $dk_na_p = explode('/', $dk_na_detail);
+        $dk_m['meldung'] = sprintf(dk_t('MELDUNG.NEU_ANGELEGT'), dk_e($dk_na_name),
+            (int) $dk_na_p[0], (int) (isset($dk_na_p[1]) ? $dk_na_p[1] : 0));
+    } elseif ($dk_na_grund === 'PORT_BELEGT') {
+        $dk_m['fehler'] = array(sprintf(dk_t('FEHLER.NEU_ANLEGEN_PORT_BELEGT'), (int) $dk_na_detail));
+    } elseif ($dk_na_grund === 'RM') {
+        $dk_m['fehler'] = array(sprintf(dk_t('FEHLER.NEU_ANLEGEN_RM'), dk_e($dk_na_name), dk_e($dk_na_detail)));
+    } elseif ($dk_na_grund === 'RUN') {
+        $dk_m['fehler'] = array(sprintf(dk_t('FEHLER.NEU_ANLEGEN_RUN'), dk_e($dk_na_name), dk_e($dk_na_detail)));
+    } else {
+        $dk_m['fehler'] = array(dk_t('FEHLER.NEU_ANLEGEN_' . $dk_na_grund));
+    }
+    dk_weiter('settings', $dk_m);
+}
+
 $dk_da    = dk_bin();
 list($dk_ok, $dk_grund, $dk_grundtext) = dk_zustand();
 $dk_z     = dk_zaehlung();
 $dk_pl    = dk_portainer_laeuft();
+list($dk_eigen_ok, $dk_eigen, $dk_eigen_fremde) = dk_eigener_container();
+$dk_knopf_neustart = sprintf(dk_t('EINST.B_NEUSTART_NAME'),
+    ($dk_eigen_ok && $dk_eigen !== null) ? $dk_eigen[0] : dk_t('EIGEN.KEIN_NAME'));
 $dk_koll  = dk_schluesselkollisionen($dk_z['liste']);
 list($dk_port, $dk_port_gemessen, $dk_port_schema) = dk_portainer_port();
-$dk_host  = preg_replace('/:.*$/', '', (string) ($_SERVER['HTTP_HOST'] ?? 'loxberry'));
+/* Der Host fuer die Links auf Portainer: geprueft wie bei den
+ * Container-Ports (C11, C12). Taugt HTTP_HOST nicht, steht 'loxberry' da. */
+$dk_host  = dk_seitenhost()[0];
+if ($dk_host === '') { $dk_host = 'loxberry'; }
 /* Schema und Port so, wie DIESE Seite gerade aufgerufen wurde.
  *
  * Bis 1.2.3 stand in der Anzeige fest 'http://' und ein um den Port
@@ -462,7 +567,7 @@ if (@is_readable('/etc/docker/daemon.json')) {
  * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
  * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dk_sichern'])) {
-    $dk_js = json_encode(dk_config(),
+    $dk_js = json_encode(dk_sicherung_bauen(),
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($dk_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
@@ -488,7 +593,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dk_zurueck'])) {
     } elseif ((int) $_FILES['dk_sicherung']['size'] > 262144) {
         $dk_m['fehler'] = array(dk_t('EINST.SICH_ZU_GROSS'));
     } else {
-        list($dk_neu, $dk_mangel, $dk_n) = dk_sicherung_lesen(
+        list($dk_neu, $dk_mangel, $dk_n, $dk_shinweis) = dk_sicherung_lesen(
             (string) @file_get_contents($_FILES['dk_sicherung']['tmp_name']));
         if ($dk_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
@@ -505,6 +610,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dk_zurueck'])) {
              * stillschweigend an. Gefunden beim Umbau auf die Umleitung,
              * nicht von einem Werkzeug. */
             $dk_m['meldung'] = sprintf(dk_t('EINST.SICH_UEBERNOMMEN'), $dk_n);
+            if ($dk_shinweis) {
+                // Hinweise gehen nicht in die Beanstandungsliste (Regeln/04):
+                // uebernommen ist ja alles Gueltige.
+                $dk_m['meldung'] .= ' ' . strip_tags(implode(' ', $dk_shinweis));
+            }
         } else {
             $dk_m['fehler'] = array(dk_t('EINST.SICH_SCHREIBFEHLER'));
         }
@@ -690,6 +800,42 @@ if (class_exists('LBWeb', false)) {
 	? sprintf(dk_t('EINST.PORT_GEMESSEN'), (int) $dk_port)
 	: sprintf(dk_t('EINST.PORT_VERMUTET'), (int) $dk_port) ?></p>
 <div class="sm-hinweis"><?= dk_t('EINST.KEIN_IFRAME') ?></div>
+<?php /* Welcher Container ist der eigene? (C1, Entscheidung 9) Nur diesen
+       * startet der Knopf neu und entfernt die Deinstallation. */ ?>
+<?php if (!$dk_eigen_ok) { ?>
+<div class="sm-hinweis"><?= dk_e(dk_t('EIGEN.NICHT_PRUEFBAR')) ?></div>
+<?php } elseif ($dk_eigen !== null) { ?>
+<div class="sm-hinweis"><?= sprintf(dk_t('EIGEN.GEFUNDEN'), dk_e($dk_eigen[0]),
+    dk_e(dk_t('EIGEN.GRUND_' . $dk_eigen[1])), dk_e($dk_eigen[2])) ?></div>
+<?php
+/* Die Ports, die der eigene Container WIRKLICH hat (C12, docker inspect),
+ * gegen die Einstellung. Weichen sie ab, sagt die Seite, dass die
+ * Einstellung erst beim Neuanlegen wirkt, und bietet den Knopf an. */
+list($dk_pi_ok, $dk_pi_h, $dk_pi_s) = dk_portainer_ports_ist();
+$dk_soll_h = (int) $dk_cfg['portainer_port'];
+$dk_soll_s = (int) $dk_cfg['portainer_https_port'];
+if ($dk_pi_ok) { ?>
+<div class="sm-hinweis"><?= sprintf(dk_t('EIGEN.PORTS_IST'),
+    dk_e($dk_pi_h > 0 ? (string) $dk_pi_h : dk_t('EIGEN.PORT_KEINER')),
+    dk_e($dk_pi_s > 0 ? (string) $dk_pi_s : dk_t('EIGEN.PORT_KEINER'))) ?></div>
+<?php if ($dk_pi_h !== $dk_soll_h || $dk_pi_s !== $dk_soll_s) { ?>
+<div class="sm-warnung"><?= sprintf(dk_t('EIGEN.PORTS_ABWEICHUNG'), $dk_soll_h, $dk_soll_s) ?>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<div class="sm-knopfreihe">
+	<label style="display:flex; align-items:center; gap:6px; margin-right:10px;"><input data-role="none" type="checkbox" name="neu_anlegen_bestaetigt" value="1"> <?= sprintf(dk_t('EINST.L_NEU_ANLEGEN_OK'), dk_e($dk_eigen[0])) ?></label>
+	<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="portainer_neu_anlegen" value="1"><?= dk_e(dk_t('EINST.B_NEU_ANLEGEN')) ?></button>
+</div>
+</form></div>
+<?php } ?>
+<?php } ?>
+<?php } else { ?>
+<div class="sm-warnung"><?= dk_t('EIGEN.KEINER') ?></div>
+<?php } ?>
+<?php if ($dk_eigen_ok && $dk_eigen_fremde) { ?>
+<div class="sm-hinweis"><?= dk_t('EIGEN.FREMDE_TITEL') ?> <?= dk_eigen_hinweis($dk_eigen_fremde) ?></div>
+<?php } ?>
 
 <h3><?= dk_e(dk_t('EINST.SETUPTOKEN')) ?></h3>
 <p class="sm-hilfe"><?= dk_t('EINST.SETUPTOKEN_TEXT') ?></p>
@@ -704,7 +850,7 @@ if (class_exists('LBWeb', false)) {
 	<input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
 		<input data-role="none" type="hidden" name="activetab" value="tab-settings">
 		<input data-role="none" type="hidden" name="portainerneu" value="1">
-		<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= dk_e(dk_t('EINST.B_NEUSTART')) ?></button>
+		<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= dk_e($dk_knopf_neustart) ?></button>
 	</form>
 </div>
 <?php if ($dk_setup !== '') { ?>
@@ -746,7 +892,8 @@ if ($dk_fehlende) { ?>
 <input data-role="none" type="hidden" name="wache_gesetzt" value="1">
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th><?= dk_e(dk_t('EINST.T_WACHE')) ?></th><th><?= dk_e(dk_t('EINST.T_NAME')) ?></th><th><?= dk_e(dk_t('EINST.T_ABBILD')) ?></th><th><?= dk_e(dk_t('EINST.T_STAND')) ?></th><th><?= dk_e(dk_t('EINST.T_GESUND')) ?></th><th><?= dk_e(dk_t('EINST.T_AUTOSTART')) ?></th><th><?= dk_e(dk_t('EINST.T_ZUSTAND')) ?></th></tr>
+<tr><th><?= dk_e(dk_t('EINST.T_WACHE')) ?></th><th><?= dk_e(dk_t('EINST.T_NAME')) ?></th><th><?= dk_e(dk_t('EINST.T_ABBILD')) ?></th><th><?= dk_e(dk_t('EINST.T_STAND')) ?></th><th><?= dk_e(dk_t('EINST.T_GESUND')) ?></th><th><?= dk_e(dk_t('EINST.T_AUTOSTART')) ?></th><th><?= dk_e(dk_t('EINST.T_ZUSTAND')) ?></th><th><?= dk_e(dk_t('EINST.T_PORTS')) ?></th></tr>
+<?php $dk_seitenhost = dk_seitenhost(); ?>
 <?php foreach ($dk_z['liste'] as $dk_c) { ?>
 <tr><td><input data-role="none" type="checkbox" name="wache[]" value="<?= dk_e($dk_c['name']) ?>"
 	<?= ($dk_alle_ueberwacht || in_array($dk_c['name'], $dk_wache, true)) ? 'checked' : '' ?>></td>
@@ -756,7 +903,8 @@ if ($dk_fehlende) { ?>
 	<td class="<?= $dk_c['laeuft'] ? 'sm-an' : ($dk_c['ausfall'] ? 'sm-aus' : '') ?>"><?= dk_e(dk_t('STAND.' . strtoupper($dk_c['zustand']))) ?></td>
 	<td class="<?= $dk_c['gesund'] === 3 ? 'sm-aus' : ($dk_c['gesund'] === 2 ? 'sm-an' : '') ?>"><?= dk_e(dk_t('GESUND.G' . (int) $dk_c['gesund'])) ?></td>
 	<td class="<?= $dk_c['autostart'] === 0 ? 'sm-aus' : '' ?>"><?= dk_e(dk_t('AUTOSTART.A' . (int) $dk_c['autostart'])) ?></td>
-	<td><?= dk_e($dk_c['status']) ?></td></tr>
+	<td><?= dk_e($dk_c['status']) ?></td>
+	<td><?= dk_ports_html($dk_c, $dk_seitenhost) /* C11: fertig maskiert */ ?></td></tr>
 <?php } ?>
 </table>
 </div>
@@ -769,7 +917,7 @@ if ($dk_fehlende) { ?>
 <span><i class="sm-punkt sm-b-aktion"></i><?= dk_e(dk_t('LEGENDE.AKTION_WACHE')) ?></span>
 </div>
 <div class="sm-knopfreihe">
-	<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern" value="1"><?= dk_e(dk_t('EINST.B_WACHE')) ?></button>
+	<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern_wache" value="1"><?= dk_e(dk_t('EINST.B_WACHE')) ?></button>
 </div>
 </form>
 <p class="sm-hilfe"><?= dk_t('EINST.CONTAINER_HINWEIS') ?></p>
@@ -781,17 +929,19 @@ if ($dk_fehlende) { ?>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-<div class="sm-feld">
-	<label for="portainer_name"><?= dk_e(dk_t('EINST.L_NAME')) ?></label>
-	<input data-role="none" type="text" id="portainer_name" name="portainer_name"
-	       value="<?= dk_e($dk_cfg['portainer_name']) ?>" size="24">
-	<p class="sm-hilfe"><?= dk_t('EINST.H_NAME') ?></p>
-</div>
+<?php /* Das Feld "Name des Portainer-Containers" ist seit 1.3.9 fort (C1):
+       * den eigenen Container erkennt das Plugin am Label, siehe oben. */ ?>
 <div class="sm-feld">
 	<label for="portainer_port"><?= dk_e(dk_t('EINST.L_PORT')) ?></label>
 	<input data-role="none" type="text" id="portainer_port" name="portainer_port"
 	       value="<?= dk_e($dk_cfg['portainer_port']) ?>" size="8">
 	<p class="sm-hilfe"><?= dk_t('EINST.H_PORT') ?></p>
+</div>
+<div class="sm-feld">
+	<label for="portainer_https_port"><?= dk_e(dk_t('EINST.L_PORT_HTTPS')) ?></label>
+	<input data-role="none" type="text" id="portainer_https_port" name="portainer_https_port"
+	       value="<?= dk_e($dk_cfg['portainer_https_port']) ?>" size="8">
+	<p class="sm-hilfe"><?= dk_t('EINST.H_PORT_HTTPS') ?></p>
 </div>
 <div class="sm-feld">
 	<label for="schleife_grenze"><?= dk_e(dk_t('EINST.L_SCHLEIFE')) ?></label>
@@ -930,10 +1080,13 @@ if ($dk_fehlende) { ?>
 	   * von Hand gefuehrte Liste. */ ?>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th><?= dk_e(dk_t('MQTT.T_THEMA')) ?></th><th><?= dk_e(dk_t('MQTT.T_WERT')) ?></th></tr>
+<tr><th><?= dk_e(dk_t('MQTT.T_THEMA')) ?></th><th><?= dk_e(dk_t('MQTT.T_WERT')) ?></th><th><?= dk_e(dk_t('MQTT.T_RETAIN')) ?></th></tr>
+<?php /* Die Spalte kommt aus derselben Tabelle, nach der der Sender je Thema
+       * 'retain' oder 'publish' waehlt (M8) - keine zweite Liste. */ ?>
 <?php foreach (dk_mqtt_themen() as $dk_th => $dk_wt) { ?>
 <tr><td><span class="sm-mono"><?= dk_e($dk_cfg['mqtt_praefix'] . '/' . $dk_th) ?></span></td>
-	<td><?= dk_e($dk_wt) ?></td></tr>
+	<td><?= dk_e($dk_wt) ?></td>
+	<td><?= dk_e(dk_mqtt_retain_eintrag($dk_th) === 1 ? dk_t('ALLGEMEIN.JA') : dk_t('ALLGEMEIN.NEIN')) ?></td></tr>
 <?php } ?>
 </table>
 </div>
@@ -1004,22 +1157,33 @@ if ($dk_fehlende) { ?>
 	   * planmaessig beendeten Sicherungscontainer - die Sammelstörung stand
 	   * damit vom ersten Tag an dauerhaft an und verschluckte ueber #4 alle
 	   * uebrigen Meldungen. AUSFALL laesst 'Exited (0)' und 'Created' aus. */ ?>
+<?php /* NEU GEORDNET in 1.3.9 (O6). Bis dahin hingen #7 (NICHT hinter
+       * DOCKERNG_OK) und #9 (Aenderungsueberwachung) an nichts, das ODER #4
+       * hatte mehr als zwei Eingaenge, und die Kette meldete nur AUSFALL.
+       * Seit 1.3.9 antwortet der Endpunkt bei nicht erreichbarem Docker mit
+       * HTTP 503 (C5): Loxone behaelt dann ALLE Werte, auch OK=1 - ein NICHT
+       * hinter OK loeste nie aus. Was dann zuverlaessig stehen bleibt, ist
+       * der Herzschlag; die Aenderungsueberwachung #7 meldet deshalb "Docker
+       * oder LoxBerry schweigt", und zwar auch bei 'permission denied'. */ ?>
 <tr><td>1</td><td><?= dk_e(dk_t('LOX.BS_VI')) ?></td><td>DOCKERNG_AUSFALL</td><td><?= dk_e(dk_t('LOX.BS_VI_P')) ?></td><td>&mdash;</td></tr>
-<tr><td>2</td><td><?= dk_e(dk_t('LOX.BS_SWS')) ?></td><td>Container gestoert</td><td><?= dk_e(dk_t('LOX.BS_SWS_P')) ?></td><td>#1</td></tr>
-<tr><td>3</td><td><?= dk_e(dk_t('LOX.BS_EIN')) ?></td><td>Meldung verzoegern</td><td><?= dk_e(dk_t('LOX.BS_EIN_P')) ?></td><td>#2</td></tr>
-<tr><td>4</td><td><?= dk_e(dk_t('LOX.BS_ODER')) ?></td><td>Sammelstörung</td><td>&mdash;</td><td>#3<?= $dk_z['liste'] ? ', ' . dk_e(dk_t('LOX.BS_ODER_MEHR')) : '' ?></td></tr>
-<tr><td>5</td><td><?= dk_e(dk_t('LOX.BS_BENACH')) ?></td><td>Docker-Störung</td><td><?= dk_e(dk_t('LOX.BS_BENACH_P')) ?></td><td>#4</td></tr>
-<tr><td>6</td><td><?= dk_e(dk_t('LOX.BS_VI')) ?></td><td>DOCKERNG_OK</td><td><?= dk_e(dk_t('LOX.BS_VI_P')) ?></td><td>&mdash;</td></tr>
-<tr><td>7</td><td><?= dk_e(dk_t('LOX.BS_NICHT')) ?></td><td>Docker antwortet nicht</td><td>&mdash;</td><td>#6</td></tr>
+<tr><td>2</td><td><?= dk_e(dk_t('LOX.BS_SWS')) ?></td><td><?= dk_e(dk_t('LOX.BN_GESTOERT')) ?></td><td><?= dk_e(dk_t('LOX.BS_SWS_P')) ?></td><td>#1</td></tr>
+<tr><td>3</td><td><?= dk_e(dk_t('LOX.BS_VI')) ?></td><td>DOCKERNG_FEHLT</td><td><?= dk_e(dk_t('LOX.BS_VI_P')) ?></td><td>&mdash;</td></tr>
+<tr><td>4</td><td><?= dk_e(dk_t('LOX.BS_SWS')) ?></td><td><?= dk_e(dk_t('LOX.BN_FEHLT')) ?></td><td><?= dk_e(dk_t('LOX.BS_SWS_P')) ?></td><td>#3</td></tr>
+<tr><td>5</td><td><?= dk_e(dk_t('LOX.BS_ODER')) ?></td><td><?= dk_e(dk_t('LOX.BN_CONTAINER')) ?></td><td>&mdash;</td><td>#2, #4</td></tr>
 <?php /* ERGAENZT in 1.3.0: Bausteine 8 und 9. Bis 1.2.4 empfahl Schritt 5,
 	   * auf einen Wertwechsel zu achten - und es gab keinen Wert, der sich
 	   * zuverlaessig aendert. Die Empfehlung war mit den damaligen Feldern
 	   * gar nicht umsetzbar. DOCKERNG_ZAEHLER aendert sich in JEDEM Takt. */ ?>
-<tr><td>8</td><td><?= dk_e(dk_t('LOX.BS_VI')) ?></td><td>DOCKERNG_ZAEHLER</td><td><?= dk_e(dk_t('LOX.BS_VI_P')) ?></td><td>&mdash;</td></tr>
-<tr><td>9</td><td><?= dk_e(dk_t('LOX.BS_AENDER')) ?></td><td>LoxBerry antwortet nicht</td><td><?= dk_e(dk_t('LOX.BS_AENDER_P')) ?></td><td>#8</td></tr>
+<tr><td>6</td><td><?= dk_e(dk_t('LOX.BS_VI')) ?></td><td>DOCKERNG_ZAEHLER</td><td><?= dk_e(dk_t('LOX.BS_VI_P')) ?></td><td>&mdash;</td></tr>
+<tr><td>7</td><td><?= dk_e(dk_t('LOX.BS_AENDER')) ?></td><td><?= dk_e(dk_t('LOX.BN_SCHWEIGT')) ?></td><td><?= dk_e(dk_t('LOX.BS_AENDER_P')) ?></td><td>#6</td></tr>
+<tr><td>8</td><td><?= dk_e(dk_t('LOX.BS_ODER')) ?></td><td><?= dk_e(dk_t('LOX.BN_SAMMEL')) ?></td><td>&mdash;</td><td>#5, #7</td></tr>
+<tr><td>9</td><td><?= dk_e(dk_t('LOX.BS_EIN')) ?></td><td><?= dk_e(dk_t('LOX.BN_VERZOEGERN')) ?></td><td><?= dk_e(dk_t('LOX.BS_EIN_P')) ?></td><td>#8</td></tr>
+<tr><td>10</td><td><?= dk_e(dk_t('LOX.BS_BENACH')) ?></td><td><?= dk_e(dk_t('LOX.BN_MELDUNG')) ?></td><td><?= dk_e(dk_t('LOX.BS_BENACH_P')) ?></td><td>#9</td></tr>
 </table>
+<p class="sm-hilfe"><?= dk_t('LOX.S4_ZU7') ?></p>
 <p class="sm-hilfe"><?= dk_t('LOX.S4_ZU3') ?></p>
 <p class="sm-hilfe"><?= dk_t('LOX.S4_ZU4') ?></p>
+<p class="sm-hilfe"><?= dk_t('LOX.S4_EINZELN') ?></p>
 </div>
 
 <div class="sm-step"><b><?= dk_e(dk_t('LOX.S5')) ?></b><br>
@@ -1034,6 +1198,12 @@ if ($dk_fehlende) { ?>
 <h2><?= dk_e(dk_t('TEST.TITEL')) ?></h2>
 <p class="sm-hilfe"><?= dk_t('TEST.EINLEITUNG') ?></p>
 
+<?php
+/* Die Tabelle wird mitgeschnitten (O5): der Gesamtbefund am Ende zaehlt die
+ * Kreuze darueber und folgt der schlechtesten Zeile. Bis 1.3.9 stand
+ * "Laeuft der Minutentakt? noch nie gelaufen" ueber einem "In Ordnung". */
+ob_start();
+?>
 <table class="sm-tbl">
 <tr><th><?= dk_e(dk_t('TEST.T_FRAGE')) ?></th><th><?= dk_e(dk_t('TEST.T_ANTWORT')) ?></th></tr>
 <tr><td><?= dk_e(dk_t('TEST.F_DOCKER')) ?></td>
@@ -1041,8 +1211,13 @@ if ($dk_fehlende) { ?>
 <tr><td><?= dk_e(dk_t('TEST.F_VERSION')) ?></td>
 	<td><?= $dk_da !== '' ? dk_e(dk_version()) : '&mdash;' ?></td></tr>
 <tr><td><?= dk_e(dk_t('TEST.F_PORTAINER')) ?></td>
+<?php if (!$dk_ok) { ?>
+	<td>&mdash; <?= dk_e(dk_t('TEST.A_NICHT_MESSBAR_DOCKER')) ?></td></tr>
+<?php } else { ?>
 	<td class="<?= $dk_pl ? 'sm-an' : 'sm-aus' ?>"><?= $dk_pl ? '&#10003;' : '&#10007;' ?></td></tr>
-<tr><td><?= dk_e(dk_t('TEST.F_CONTAINER')) ?></td><td><?= (int) $dk_z['gesamt'] ?></td></tr>
+<?php } ?>
+<tr><td><?= dk_e(dk_t('TEST.F_CONTAINER')) ?></td><td><?= $dk_ok ? (int) $dk_z['gesamt']
+	: '&mdash; ' . dk_e(dk_t('TEST.A_NICHT_MESSBAR_DOCKER')) ?></td></tr>
 <?php
 /* Laeuft der Minutentakt noch?
  *
@@ -1055,7 +1230,7 @@ if ($dk_fehlende) { ?>
 <tr><td><?= dk_e(dk_t('TEST.F_TAKT')) ?></td>
 <?php if ($dk_alter < 0) { ?>
 	<td class="sm-aus">&#10007; <?= dk_e(dk_t('TEST.A_TAKT_NIE')) ?></td>
-<?php } elseif ($dk_alter <= 180) { ?>
+<?php } elseif ($dk_alter <= dk_takt_grenze()) { ?>
 	<td class="sm-an">&#10003; <?= dk_e(sprintf(dk_t('TEST.A_TAKT_OK'), $dk_alter)) ?></td>
 <?php } else { ?>
 	<td class="sm-aus">&#10007; <?= dk_e(sprintf(dk_t('TEST.A_TAKT_ALT'), (int) round($dk_alter / 60))) ?></td>
@@ -1068,29 +1243,76 @@ if ($dk_fehlende) { ?>
  * der haeufigste Grund, warum am Miniserver nichts ankommt - deshalb steht er
  * als Warnung im Reiter MQTT und nicht nur hier. */
 ?>
-<tr><td><?= dk_e(dk_t('TEST.F_MQTT')) ?></td>
-<?php if (!$dk_cfg['mqtt_aktiv']) { ?>
-	<td><?= dk_e(dk_t('TEST.A_MQTT_AUS')) ?></td>
-<?php } elseif ($dk_mqttlage['udpport'] && $dk_mqttlage['autostart']) { ?>
-	<td class="sm-an">&#10003; <?= dk_e(sprintf(dk_t('TEST.A_MQTT_OK'), (int) $dk_mqttlage['udpport'])) ?></td>
-<?php } else { ?>
-	<td class="sm-aus">&#10007; <?= dk_e(dk_t('TEST.A_MQTT_FEHLT')) ?></td>
-<?php } ?>
-</tr>
 <?php
-/* Kongruenzprobe fuer MQTT: nennt die Themenliste genau das, was der
- * Sendecode veroeffentlicht? Hier ist die Antwort bauartbedingt ja - beide
- * kommen aus dk_mqtt_themen(). Die Zeile zaehlt trotzdem nach und meldet die
- * ANZAHL: eine Pruefung ohne Fundstellen ist kein Nachweis, sondern ein
- * blinder Fleck. Und die leere Menge wird zuerst geprueft - "alle 0 von 0
- * sind in Ordnung" ist kein Haken.
+/* SEIT 1.3.9 (M9, Fehlerklasse 8): "vollstaendig" steht nur da, wo es
+ * gemessen ist - der UDP-Eingang ist eingerichtet UND der letzte Versand des
+ * Minutentakts wurde ohne Fehler an ihn abgesetzt (Versand, nicht Ankunft:
+ * der Eingang kann verwerfen, ohne dass ein Absender es merkt, Regeln/07).
+ * Sonst heisst die Zeile "eingestellt". Bis 1.3.9 stand ein Haken, sobald
+ * zwei Schluessel in general.json gesetzt waren. */
+$dk_mv = (isset($dk_zd['mqtt']['versand']) && is_array($dk_zd['mqtt']['versand'])) ? $dk_zd['mqtt']['versand'] : array();
+$dk_mv_alter = isset($dk_mv['zeit']) ? time() - (int) $dk_mv['zeit'] : -1;
+$dk_mv_gemessen = $dk_mv_alter >= 0 && $dk_mv_alter <= dk_takt_grenze()
+                  && ((int) ($dk_mv['gesendet'] ?? 0) + (int) ($dk_mv['gescheitert'] ?? 0)) > 0;
+$dk_mqtt_weg = $dk_mqttlage['udpport'] && $dk_mqttlage['autostart'];
+?>
+<?php if (!$dk_cfg['mqtt_aktiv']) { ?>
+<tr><td><?= dk_e(dk_t('TEST.F_MQTT_EINGESTELLT')) ?></td>
+	<td><?= dk_e(dk_t('TEST.A_MQTT_AUS')) ?></td></tr>
+<?php } elseif (!$dk_mqtt_weg) { ?>
+<tr><td><?= dk_e(dk_t('TEST.F_MQTT_EINGESTELLT')) ?></td>
+	<td class="sm-aus">&#10007; <?= dk_e(dk_t('TEST.A_MQTT_FEHLT')) ?></td></tr>
+<?php } elseif ($dk_mv_gemessen && (int) ($dk_mv['gescheitert'] ?? 0) === 0) { ?>
+<tr><td><?= dk_e(dk_t('TEST.F_MQTT')) ?></td>
+	<td class="sm-an">&#10003; <?= dk_e(sprintf(dk_t('TEST.A_MQTT_OK'), (int) $dk_mqttlage['udpport'],
+		(int) $dk_mv['gesendet'], (int) $dk_mv_alter)) ?></td></tr>
+<?php } elseif ($dk_mv_gemessen) { ?>
+<tr><td><?= dk_e(dk_t('TEST.F_MQTT')) ?></td>
+	<td class="sm-aus">&#10007; <?= dk_e(sprintf(dk_t('TEST.A_MQTT_GESCHEITERT'), (int) $dk_mv['gescheitert'],
+		(int) $dk_mv['gescheitert'] + (int) ($dk_mv['gesendet'] ?? 0))) ?></td></tr>
+<?php } else { ?>
+<tr><td><?= dk_e(dk_t('TEST.F_MQTT_EINGESTELLT')) ?></td>
+	<td>&bull; <?= dk_e(sprintf(dk_t('TEST.A_MQTT_EINGESTELLT'), (int) $dk_mqttlage['udpport'])) ?></td></tr>
+<?php } ?>
+<?php
+/* Retain-Tabelle gegen Sendecode (O5, M1). BIS 1.3.9 zaehlte diese Zeile
+ * nur, und ihr eigener Kommentar sagte "bauartbedingt ja" - sie konnte nie
+ * rot werden. Jetzt ein Vergleich in BEIDE Richtungen: jedes Thema, das
+ * dk_mqtt_themen() erzeugt, braucht einen Eintrag in der Retain-Tabelle
+ * (sonst ginge es ungeplant fluechtig hinaus), und jeder Eintrag der
+ * Tabelle muss von einem erzeugten Thema getroffen werden (sonst beschreibt
+ * die Spalte "zurueckbehalten" etwas, das nie gesendet wird). Eintraege, die
+ * nur mit Containern oder einer Plattenmessung entstehen, zaehlen erst, wenn
+ * es beides gibt. Antwortet Docker nicht, ist die Zeile nicht messbar.
  */
 $dk_themen = dk_mqtt_themen();
+$dk_th_ohne = array();
+foreach (array_keys($dk_themen) as $dk_t1) {
+    if (dk_mqtt_retain_eintrag($dk_t1) < 0) { $dk_th_ohne[] = $dk_t1; }
+}
+$dk_th_leer = array();
+$dk_th_geprueft = 0;
+foreach (dk_mqtt_retain_tabelle() as $dk_m1 => $dk_r1) {
+    if (strpos($dk_m1, '*') !== false && !$dk_z['wache']) { continue; }
+    if (strpos($dk_m1, 'platte/') === 0 && !isset($dk_themen[$dk_m1])
+        && !(dk_takt_frisch() && isset($dk_zd['platz'][substr($dk_m1, 7)]))) { continue; }
+    $dk_th_geprueft++;
+    $dk_re1 = '#^' . str_replace('\*', '[^/]+', preg_quote($dk_m1, '#')) . '\z#';
+    $dk_hit = false;
+    foreach (array_keys($dk_themen) as $dk_t1) { if (preg_match($dk_re1, $dk_t1)) { $dk_hit = true; break; } }
+    if (!$dk_hit) { $dk_th_leer[] = $dk_m1; }
+}
 ?>
 <tr><td><?= dk_e(dk_t('TEST.F_THEMEN')) ?></td>
-	<td class="<?= count($dk_themen) > 0 ? 'sm-an' : 'sm-aus' ?>"><?= count($dk_themen) > 0
-		? '&#10003; ' . dk_e(sprintf(dk_t('TEST.A_THEMEN_OK'), count($dk_themen)))
-		: '&#10007; ' . dk_e(dk_t('TEST.A_THEMEN_LEER')) ?></td></tr>
+<?php if (!$dk_ok) { ?>
+	<td>&mdash; <?= dk_e(dk_t('TEST.A_NICHT_MESSBAR_DOCKER')) ?></td>
+<?php } elseif ($dk_th_ohne || $dk_th_leer) { ?>
+	<td class="sm-aus">&#10007; <?= dk_e(sprintf(dk_t('TEST.A_THEMEN_ABWEICHUNG'),
+		$dk_th_ohne ? implode(', ', $dk_th_ohne) : '-', $dk_th_leer ? implode(', ', $dk_th_leer) : '-')) ?></td>
+<?php } else { ?>
+	<td class="sm-an">&#10003; <?= dk_e(sprintf(dk_t('TEST.A_THEMEN_OK'), count($dk_themen), $dk_th_geprueft)) ?></td>
+<?php } ?>
+</tr>
 <tr><td><?= dk_e(dk_t('TEST.F_ROTATION')) ?></td>
 <?php if ($dk_rot['gesetzt'] === 1) { ?>
 	<td class="sm-an">&#10003; <?= dk_e($dk_rot['max']) ?></td>
@@ -1100,8 +1322,7 @@ $dk_themen = dk_mqtt_themen();
 	<td><?= dk_e(dk_t('TEST.A_ROTATION_UNKLAR')) ?></td>
 <?php } ?>
 </tr>
-<tr><td><?= dk_e(dk_t('TEST.F_BEFUND')) ?></td>
-	<td class="<?= $dk_befund['schwere'] <= 4 ? 'sm-aus' : 'sm-an' ?>"><?= dk_e($dk_befund['text']) ?></td></tr>
+<?php /* Der Gesamtbefund steht seit 1.3.9 am ENDE der Tabelle (O5). */ ?>
 <?php /* BERICHTIGT in 1.2.4: diese Zeile war fest auf sm-an verdrahtet und
 	   * zeigte "24 Zeichen" auch dann, wenn sich die Konfiguration gar nicht
 	   * schreiben liess und auf Platte kein Merkwort stand. Der Endpunkt
@@ -1115,15 +1336,28 @@ $dk_themen = dk_mqtt_themen();
 <?php } ?>
 </tr>
 <?php
-/* Ist die Konfiguration heil? Drei Ausgaenge, nicht zwei - "es gibt eine
- * Datei" ist keine Antwort auf "steht etwas Brauchbares darin". */
-$dk_kroh = @is_file($dk_p['config']) ? (string) @file_get_contents($dk_p['config']) : '';
-if (!@is_file($dk_p['config'])) {
-    $dk_kklasse = 'sm-aus'; $dk_ktext = '&#10007; ' . dk_e(dk_t('TEST.A_KONFIG_FEHLT'));
-} elseif (dk_konfig_taugt($dk_kroh)) {
+/* Ist die Konfiguration heil? SEIT 1.3.9 (O4) wird die Lage gezeigt, die
+ * dk_config() beim ERSTEN Lesen dieses Seitenaufrufs vorfand - vor der
+ * Selbstheilung. Bis dahin las diese Zeile die schon geheilte Datei und
+ * zeigte "gelesen, Merkwort vorhanden", waehrend daneben eine .kaputt lag
+ * (gemessen). Ein geheilter Schaden ist kein Nicht-Schaden (Regeln/05). */
+$dk_klage = dk_konfig_lage();
+$dk_kaputt_datei = $dk_p['config'] . '.kaputt';
+if ($dk_klage === 'ok') {
     $dk_kklasse = 'sm-an';  $dk_ktext = '&#10003; ' . dk_e(dk_t('TEST.A_KONFIG_OK'));
+} elseif ($dk_klage === 'leer' || $dk_klage === 'fehlt') {
+    // Frische Installation: postinstall.sh legt {} an, das Merkwort entsteht
+    // beim ersten Oeffnen dieser Seite. Das ist der Normalfall, kein Mangel.
+    $dk_kklasse = '';       $dk_ktext = '&bull; ' . dk_e(dk_t('TEST.A_KONFIG_NEU'));
+} elseif (strpos($dk_klage, '_geheilt') !== false) {
+    $dk_kklasse = 'sm-aus'; $dk_ktext = '&#10007; ' . dk_e(dk_t('TEST.A_KONFIG_GEHEILT'));
+} elseif ($dk_klage === 'kaputt_ohne_zweitschrift') {
+    $dk_kklasse = 'sm-aus'; $dk_ktext = '&#10007; ' . dk_e(dk_t('TEST.A_KONFIG_KAPUTT_NEU'));
 } else {
     $dk_kklasse = 'sm-aus'; $dk_ktext = '&#10007; ' . dk_e(dk_t('TEST.A_KONFIG_KAPUTT'));
+}
+if (@is_file($dk_kaputt_datei)) {
+    $dk_ktext .= ' ' . dk_e(sprintf(dk_t('TEST.A_KONFIG_KAPUTT_DATEI'), $dk_kaputt_datei));
 }
 ?>
 <tr><td><?= dk_e(dk_t('TEST.F_KONFIG')) ?></td>
@@ -1194,9 +1428,16 @@ libxml_use_internal_errors($dk_xmlalt);
 		? '&#10003; ' . dk_e(sprintf(dk_t('TEST.A_XML_OK'), substr_count($dk_xmlroh, '<VirtualInHttpCmd')))
 		: '&#10007;' ?></td></tr>
 <tr><td><?= dk_e(dk_t('TEST.F_KOLLISION')) ?></td>
+<?php if (!$dk_ok) { ?>
+	<td>&mdash; <?= dk_e(dk_t('TEST.A_NICHT_MESSBAR_DOCKER')) ?></td>
+<?php } elseif (!$dk_z['liste']) { ?>
+	<td>&bull; <?= dk_e(dk_t('TEST.A_KOLLISION_LEER')) ?></td>
+<?php } else { ?>
 	<td class="<?= $dk_koll ? 'sm-aus' : 'sm-an' ?>"><?= $dk_koll
 		? '&#10007; ' . dk_e(implode(', ', array_keys($dk_koll)))
-		: '&#10003; ' . dk_e(sprintf(dk_t('TEST.A_KOLLISION_OK'), count($dk_z['liste']))) ?></td></tr>
+		: '&#10003; ' . dk_e(sprintf(dk_t('TEST.A_KOLLISION_OK'), count($dk_z['liste']))) ?></td>
+<?php } ?>
+</tr>
 <?php
 /* Antwortet der eigene Endpunkt WIRKLICH?
  *
@@ -1268,6 +1509,48 @@ if (preg_match_all('/<form\s/', $dk_quelle, $dk_fy, PREG_OFFSET_CAPTURE)) {
 	<td class="sm-aus">&#10007; <?= dk_e(dk_t('TEST.A_CSRF_LEER')) ?></td>
 <?php } else { ?>
 	<td class="sm-aus">&#10007; <?= dk_e(sprintf(dk_t('TEST.A_CSRF_FEHLT'), $dk_form_ohne, $dk_form_a)) ?></td>
+<?php } ?>
+</tr>
+<?php
+/* Steht der Cron-Eintrag? (O4, Regeln/04, Raumklima 0.11.8) Gesucht wird
+ * an ALLEN Takt-Orten: so zeigt die Zeile auch Reste frueherer Fassungen.
+ * Ein Verzeichnis an der Stelle laeuft nie (Regeln/06). Ohne LoxBerry-Baum
+ * (entpacktes Archiv) ist die Zeile nicht messbar - ein Strich, kein Haken. */
+$dk_cronwurzel = $dk_p['home'] . '/system/cron';
+$dk_crondateien = array(); $dk_cronordner = array(); $dk_cronrest = array();
+if (@is_dir($dk_cronwurzel)) {
+    foreach ((glob($dk_cronwurzel . '/cron.*min/' . $dk_p['plugin']) ?: array()) as $dk_cf) {
+        if (@is_dir($dk_cf)) { $dk_cronordner[] = $dk_cf; continue; }
+        $dk_crondateien[] = $dk_cf;
+        if (basename(dirname($dk_cf)) !== 'cron.01min') { $dk_cronrest[] = $dk_cf; }
+    }
+}
+?>
+<tr><td><?= dk_e(dk_t('TEST.F_CRON')) ?></td>
+<?php if (!@is_dir($dk_cronwurzel)) { ?>
+	<td>&mdash; <?= dk_e(dk_t('TEST.A_CRON_KEIN_BAUM')) ?></td>
+<?php } elseif ($dk_cronordner) { ?>
+	<td class="sm-aus">&#10007; <?= dk_e(sprintf(dk_t('TEST.A_CRON_ORDNER'), implode(', ', $dk_cronordner))) ?></td>
+<?php } elseif (!$dk_crondateien) { ?>
+	<td class="sm-aus">&#10007; <?= dk_e(dk_t('TEST.A_CRON_FEHLT')) ?></td>
+<?php } elseif ($dk_cronrest) { ?>
+	<td class="sm-aus">&#10007; <?= dk_e(sprintf(dk_t('TEST.A_CRON_REST'), implode(', ', $dk_cronrest))) ?></td>
+<?php } else { ?>
+	<td class="sm-an">&#10003; <?= dk_e($dk_crondateien[0]) ?></td>
+<?php } ?>
+</tr>
+<?php
+$dk_testtabelle = ob_get_contents();
+ob_end_flush();
+$dk_mangel = substr_count($dk_testtabelle, 'sm-aus">&#10007;');
+?>
+<tr><td><?= dk_e(dk_t('TEST.F_BEFUND')) ?></td>
+<?php if ($dk_befund['schwere'] <= 4) { ?>
+	<td class="sm-aus">&#10007; <?= dk_e($dk_befund['text']) ?></td>
+<?php } elseif ($dk_mangel > 0) { ?>
+	<td class="sm-aus">&#10007; <?= dk_e(sprintf(dk_t('TEST.A_BEFUND_ZEILEN'), $dk_befund['text'], $dk_mangel)) ?></td>
+<?php } else { ?>
+	<td class="sm-an">&#10003; <?= dk_e($dk_befund['text']) ?></td>
 <?php } ?>
 </tr>
 </table>
@@ -1346,7 +1629,7 @@ if (preg_match_all('/<form\s/', $dk_quelle, $dk_fy, PREG_OFFSET_CAPTURE)) {
 	<input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
 		<input data-role="none" type="hidden" name="activetab" value="tab-test">
 		<input data-role="none" type="hidden" name="portainerneu" value="1">
-		<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= dk_e(dk_t('EINST.B_NEUSTART')) ?></button>
+		<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= dk_e($dk_knopf_neustart) ?></button>
 	</form>
 </div>
 </div>
@@ -1400,6 +1683,7 @@ if ($dk_cronerr) { ?>
 	<form action="index.php" method="post">
 	<input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
 		<input data-role="none" type="hidden" name="activetab" value="tab-log">
+		<label style="display:flex; align-items:center; gap:6px; margin-right:10px;"><input data-role="none" type="checkbox" name="log_bestaetigt" value="1"> <?= dk_e(dk_t('LOG.L_BESTAETIGT')) ?></label>
 		<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="log_leeren" value="1"><?= dk_e(dk_t('LOG.B_LEEREN')) ?></button>
 	</form>
 </div>
