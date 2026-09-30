@@ -929,8 +929,10 @@ function dk_container($frisch = false)
         // Liste bekommt, soll sie an dk_zustand() halten.
         return array();
     }
+    // X-5 (Verbesserungsbau 30.09.2026): {{.Labels}} als siebtes Feld -
+    // welches Plugin den Container angelegt hat (dk_plugin_zuordnung).
     list($roh, $fehler, $code) = dk_ausfuehren(
-        "docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.State}}\t{{.HealthStatus}}\t{{.Ports}}'");
+        "docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.State}}\t{{.HealthStatus}}\t{{.Ports}}\t{{.Labels}}'");
     if ($code !== 0) {
         return array();
     }
@@ -951,6 +953,9 @@ function dk_container($frisch = false)
             // C11: die Portspalte, wie docker ps sie schreibt; zerlegt wird
             // erst bei der Anzeige (dk_ports_zerlegen).
             'ports'     => isset($t[5]) ? trim($t[5]) : '',
+            // X-5: Labels de.loxberry.plugin.folder und .name; null = mehrdeutig.
+            'lb_ordner' => dk_label_wert(isset($t[6]) ? $t[6] : '', 'de.loxberry.plugin.folder'),
+            'lb_name'   => dk_label_wert(isset($t[6]) ? $t[6] : '', 'de.loxberry.plugin.name'),
         );
     }
     // Autostart und Neustartzaehler stehen nur in 'docker inspect' - ein
@@ -965,6 +970,67 @@ function dk_container($frisch = false)
         $liste[$i]['oom']        = isset($x['oom']) ? $x['oom'] : 0;
     }
     return $liste;
+}
+
+/**
+ * Den Wert eines Labels aus der Spalte {{.Labels}} von docker ps
+ * ("k=v,k=v", Reihenfolge beliebig). '' = nicht gesetzt, null = der
+ * Schluessel steht mehr als einmal da (ein fremder Wert mit Komma) - dann
+ * wird nichts behauptet. (X-5, Verbesserungsbau 30.09.2026)
+ */
+function dk_label_wert($roh, $schluessel)
+{
+    $treffer = array();
+    foreach (explode(',', trim((string) $roh)) as $teil) {
+        if (strpos($teil, $schluessel . '=') === 0) {
+            $treffer[] = substr($teil, strlen($schluessel) + 1);
+        }
+    }
+    if (count($treffer) > 1) { return null; }
+    return $treffer ? $treffer[0] : '';
+}
+
+/**
+ * Zu welchem Plugin gehoert ein Container? (X-5)
+ * Rueckgabe array(ordner, name, urteil) mit urteil
+ *   KEINS    kein Label de.loxberry.plugin.folder
+ *   DIESES   dieses Plugin (Docker NG selbst)
+ *   DA       ein Plugin, dessen Ordner es auf diesem LoxBerry gibt
+ *   VERWAIST ein Plugin, dessen Ordner es nicht mehr gibt - nur Hinweis
+ *   UNKLAR   nicht pruefbar (mehrdeutiges Label, unbrauchbarer Ordnername,
+ *            kein LoxBerry-Baum)
+ * Installiert heisst: config/plugins/<o>, bin/plugins/<o> oder
+ * webfrontend/htmlauth/plugins/<o> ist da. Die legt der Installer fuer jedes
+ * Plugin an, und die Deinstallation raeumt sie ab.
+ */
+function dk_plugin_zuordnung($c)
+{
+    $o = array_key_exists('lb_ordner', $c) ? $c['lb_ordner'] : '';
+    $n = (isset($c['lb_name']) && is_string($c['lb_name'])) ? $c['lb_name'] : '';
+    if ($o === '') { return array('', $n, 'KEINS'); }
+    if (!is_string($o) || !preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $o)) {
+        return array(is_string($o) ? $o : '?', $n, 'UNKLAR');
+    }
+    $p = dk_paths();
+    if ($o === $p['plugin']) { return array($o, $n, 'DIESES'); }
+    if ($p['home'] === '' || !@is_dir($p['home'] . '/config/plugins')) { return array($o, $n, 'UNKLAR'); }
+    foreach (array('/config/plugins/', '/bin/plugins/', '/webfrontend/htmlauth/plugins/') as $u) {
+        if (@is_dir($p['home'] . $u . $o)) { return array($o, $n, 'DA'); }
+    }
+    return array($o, $n, 'VERWAIST');
+}
+
+/** Die Zelle "Plugin" der Containeruebersicht, fertig maskiert (X-5). */
+function dk_plugin_html($c)
+{
+    list($o, $n, $u) = dk_plugin_zuordnung($c);
+    if ($u === 'KEINS') { return '&ndash;'; }
+    $t = '<span class="sm-mono">' . dk_e($o) . '</span>';
+    if ($n !== '' && $n !== $o) { $t .= ' (' . dk_e($n) . ')'; }
+    if ($u === 'DIESES') { return $t . '<br><span class="sm-hilfe">' . dk_e(dk_t('EINST.PLUGIN_DIESES')) . '</span>'; }
+    if ($u === 'VERWAIST') { return $t . '<br><span class="sm-aus">' . dk_e(dk_t('EINST.PLUGIN_FEHLT')) . '</span>'; }
+    if ($u === 'UNKLAR') { return $t . '<br><span class="sm-hilfe">' . dk_e(dk_t('EINST.PLUGIN_UNKLAR')) . '</span>'; }
+    return $t;
 }
 
 /**
@@ -2188,6 +2254,145 @@ function dk_zustandsdatei_schreiben_hilf($pfad, $daten)
  * Einrichtungstoken von Portainer, deshalb 0600 - anders als die uebrigen
  * Nebendateien unter data/.
  * ================================================================== */
+/* ==================================================================
+ * Eingaben nach einer Beanstandung (Verbesserungsbau 30.09.2026, X-2;
+ * Regeln/04 "Nach einer Beanstandung stehen die eingetippten Werte wieder
+ * im Formular")
+ *
+ * Nur nach einer Beanstandung, nur das eine Formular und nur seine Felder.
+ * Der Haken "neues Merkwort" (token_neu) reist nie mit; er wird nur
+ * markiert. Ein Wert, der kein gueltiges UTF-8 ist oder laenger als 256
+ * Byte, reist nicht mit (sonst scheiterte json_encode und mit ihm die
+ * Einmalmeldung) - das Feld zeigt dann den gespeicherten Stand.
+ * ================================================================== */
+
+/** Die Felder je Formular. */
+function dk_eingabe_felder($form)
+{
+    $f = array(
+        'settings' => array('text'  => array('portainer_port', 'portainer_https_port',
+                                             'schleife_grenze', 'platz_grenze_mb'),
+                            'haken' => array('melden_aktiv', 'updates_aktiv'),
+                            'liste' => array(), 'nie' => array('token_neu')),
+        'mqtt'     => array('text' => array('mqtt_praefix'), 'haken' => array('mqtt_aktiv'),
+                            'liste' => array(), 'nie' => array()),
+        'wache'    => array('text' => array(), 'haken' => array('wache_alle'),
+                            'liste' => array('wache'), 'nie' => array()),
+    );
+    return isset($f[$form]) ? $f[$form] : null;
+}
+
+function dk_eingabe_taugt($w)
+{
+    return is_string($w) && strlen($w) <= 256 && preg_match('//u', $w) === 1;
+}
+
+/** Die eingetippten Werte eines Formulars aus $_POST, fuer die Einmalmeldung. */
+function dk_eingaben_sammeln($form, $beanstandet)
+{
+    $f = dk_eingabe_felder($form);
+    if ($f === null || !$beanstandet) { return null; }
+    $werte = array();
+    foreach ($f['text'] as $k) {
+        if (isset($_POST[$k]) && dk_eingabe_taugt($_POST[$k])) { $werte[$k] = $_POST[$k]; }
+    }
+    foreach ($f['haken'] as $k) {
+        $werte[$k] = isset($_POST[$k]) ? '1' : '';
+    }
+    foreach ($f['liste'] as $k) {
+        $l = array();
+        if (isset($_POST[$k]) && is_array($_POST[$k])) {
+            foreach ($_POST[$k] as $w) {
+                if (dk_eingabe_taugt($w) && count($l) < 500) { $l[] = $w; }
+            }
+        }
+        $werte[$k] = $l;
+    }
+    foreach ($f['nie'] as $k) {
+        if (isset($_POST[$k])) { $beanstandet[] = $k; }
+    }
+    return array('form' => $form, 'werte' => $werte,
+                 'beanstandet' => array_values(array_unique(array_map('strval', $beanstandet))));
+}
+
+/** Eine Einmalmeldung um die Eingaben ergaenzen - nur, wenn ein Feld beanstandet wurde. */
+function dk_mit_eingaben($m, $form, $beanstandet)
+{
+    $e = dk_eingaben_sammeln($form, $beanstandet);
+    if ($e !== null) { $m['eingaben'] = $e; }
+    return $m;
+}
+
+/** Die Eingaben aus der Einmalmeldung annehmen (nur bekannte Felder, nur Text). */
+function dk_eingaben_setzen($roh = null)
+{
+    static $ein = array('form' => '', 'werte' => array(), 'beanstandet' => array());
+    if ($roh === null) { return $ein; }
+    if (!is_array($roh) || !isset($roh['form']) || !is_string($roh['form'])) { return $ein; }
+    $f = dk_eingabe_felder($roh['form']);
+    if ($f === null) { return $ein; }
+    $w = (isset($roh['werte']) && is_array($roh['werte'])) ? $roh['werte'] : array();
+    $werte = array();
+    foreach (array_merge($f['text'], $f['haken']) as $k) {
+        if (isset($w[$k]) && is_string($w[$k])) { $werte[$k] = $w[$k]; }
+    }
+    foreach ($f['liste'] as $k) {
+        if (isset($w[$k]) && is_array($w[$k])) { $werte[$k] = array_values(array_filter($w[$k], 'is_string')); }
+    }
+    $erlaubt = array_merge($f['text'], $f['haken'], $f['liste'], $f['nie']);
+    $roh_b = (isset($roh['beanstandet']) && is_array($roh['beanstandet'])) ? $roh['beanstandet'] : array();
+    $bean = array();
+    foreach ($roh_b as $b) {
+        if (is_string($b) && in_array($b, $erlaubt, true)) { $bean[] = $b; }
+    }
+    if ($bean) { $ein = array('form' => $roh['form'], 'werte' => $werte, 'beanstandet' => $bean); }
+    return $ein;
+}
+
+/** Welches Formular zeigt gerade Eingaben ('' = keines)? */
+function dk_eingaben_aktiv()
+{
+    $e = dk_eingaben_setzen();
+    return $e['form'];
+}
+
+/** Wert eines Textfelds: die Eingabe nach einer Beanstandung, sonst der gespeicherte. */
+function dk_eingabe($form, $feld, $gespeichert)
+{
+    $e = dk_eingaben_setzen();
+    if ($e['form'] === $form && isset($e['werte'][$feld]) && is_string($e['werte'][$feld])) {
+        return $e['werte'][$feld];
+    }
+    return $gespeichert;
+}
+
+/** Haken: nach einer Beanstandung der abgeschickte Stand, sonst der gespeicherte. */
+function dk_eingabe_an($form, $feld, $gespeichert)
+{
+    $e = dk_eingaben_setzen();
+    if ($e['form'] === $form && isset($e['werte'][$feld]) && is_string($e['werte'][$feld])) {
+        return $e['werte'][$feld] === '1';
+    }
+    return (bool) $gespeichert;
+}
+
+/** Liste (Wachliste): nach einer Beanstandung die angehakten Namen, sonst null. */
+function dk_eingabe_liste($form, $feld)
+{
+    $e = dk_eingaben_setzen();
+    if ($e['form'] === $form && isset($e['werte'][$feld]) && is_array($e['werte'][$feld])) {
+        return $e['werte'][$feld];
+    }
+    return null;
+}
+
+/** Das beanstandete Feld wird rot umrandet (Klasse sm-beanstandet). */
+function dk_markierung($feld)
+{
+    $e = dk_eingaben_setzen();
+    return in_array($feld, $e['beanstandet'], true) ? ' class="sm-beanstandet" aria-invalid="true"' : '';
+}
+
 function dk_flash_datei()
 {
     return dk_paths()['datadir'] . '/meldung.json';
@@ -2794,8 +2999,13 @@ function dk_ports_belegt()
  * gewuenschter Port belegt, geschieht nichts.
  * Rueckgabe array(ok, grund, name, detail); grund OK | NICHT_PRUEFBAR |
  * KEIN_EIGENER | PORTS | PORTS_UNKLAR | PORT_BELEGT | RM | RUN.
+ *
+ * $ports (Verbesserungsbau 30.09.2026, a1): array(http, https) statt der
+ * Einstellung. Die Aktualisierung des Abbilds legt den Container mit den
+ * Ports an, die er WIRKLICH hat - "dieselben Einstellungen" -, nicht mit
+ * einer Aenderung der Einstellung, die noch nicht angewandt ist.
  */
-function dk_portainer_neu_anlegen()
+function dk_portainer_neu_anlegen($ports = null)
 {
     list($ok, $eigen) = dk_eigener_container(true);
     if (!$ok) { return array(false, 'NICHT_PRUEFBAR', '', ''); }
@@ -2808,6 +3018,10 @@ function dk_portainer_neu_anlegen()
     $cfg = dk_config();
     $h = (int) $cfg['portainer_port'];
     $s = (int) $cfg['portainer_https_port'];
+    if (is_array($ports) && count($ports) === 2) {
+        $h = (int) $ports[0];
+        $s = (int) $ports[1];
+    }
     if ($h < 1024 || $h > 65535 || $s < 1024 || $s > 65535 || $h === $s) {
         return array(false, 'PORTS', $name, '');
     }
@@ -2821,13 +3035,48 @@ function dk_portainer_neu_anlegen()
         }
     }
     $token = dk_setup_token_vorgegeben();
-    list($aus, $fehler, $code) = dk_ausfuehren('docker rm -f -- ' . escapeshellarg($name), 60);
+    /* Nachtrag 01.10.2026: die Volumes des ALTEN Containers (HostConfig.Binds)
+     * statt fest /opt/portainer - ein Altbestand mit anderem Datenort behaelt
+     * seine Daten. Ohne lesbares Ziel /data wird nichts angefasst. */
+    list($aus, $fehler, $code) = dk_ausfuehren('docker inspect --type container --format '
+        . escapeshellarg('{{json .HostConfig.Binds}}') . ' -- ' . escapeshellarg($name));
+    $binds = json_decode(trim($aus), true);
+    $vol = '';
+    $daten = false;
+    if ($code === 0 && is_array($binds)) {
+        foreach ($binds as $b) {
+            if (!is_string($b) || !preg_match('#^[A-Za-z0-9_./-]+:(/[A-Za-z0-9_./-]*)(:[a-z,]+)?\z#', $b, $bm)) {
+                $daten = false;
+                $vol = '';
+                break;
+            }
+            if ($bm[1] === '/data') { $daten = true; }
+            $vol .= ' --volume=' . escapeshellarg($b);
+        }
+    }
+    if (!$daten) {
+        return array(false, 'VOLUMES', $name, '');
+    }
+    /* Nachtrag 01.10.2026 (sicheres Neuanlegen): bis hierher stand
+     * "docker rm -f" vor "docker run" - scheiterte run, war Portainer fort
+     * (gemessen im Verbesserungsbau, Fall F8). Jetzt: anhalten, umbenennen,
+     * neu anlegen; erst bei Erfolg den alten entfernen, sonst den neuen
+     * entfernen, den alten zurueckbenennen und starten. */
+    $altname = substr($name, 0, 40) . '-alt-' . date('YmdHis');
+    list($aus, $fehler, $code) = dk_ausfuehren('docker stop -t 20 -- ' . escapeshellarg($name), 60);
     if ($code !== 0) {
-        dk_log('Neu anlegen: der Container ' . $name . ' liess sich nicht entfernen (Rueckgabewert '
+        dk_log('Neu anlegen: der Container ' . $name . ' liess sich nicht anhalten (Rueckgabewert '
             . $code . '): ' . ($fehler !== '' ? $fehler : 'ohne Meldung'));
         return array(false, 'RM', $name, $fehler !== '' ? $fehler : 'rc ' . $code);
     }
-    $befehl = 'docker run --volume=/var/run/docker.sock:/var/run/docker.sock --volume=/opt/portainer:/data'
+    list($aus, $fehler, $code) = dk_ausfuehren('docker rename ' . escapeshellarg($name) . ' ' . escapeshellarg($altname), 30);
+    if ($code !== 0) {
+        dk_ausfuehren('docker start -- ' . escapeshellarg($name), 60);
+        dk_log('Neu anlegen: der Container ' . $name . ' liess sich nicht umbenennen (Rueckgabewert '
+            . $code . '): ' . ($fehler !== '' ? $fehler : 'ohne Meldung') . ' - wieder gestartet.');
+        return array(false, 'RM', $name, $fehler !== '' ? $fehler : 'rc ' . $code);
+    }
+    $befehl = 'docker run' . $vol
         . ' -p=' . $h . ':9000 -p=' . $s . ':9443 --name=' . escapeshellarg($name)
         . ' --restart=unless-stopped --detach=true'
         . ' --label=' . escapeshellarg('de.loxberry.plugin.folder=' . dk_paths()['plugin'])
@@ -2836,16 +3085,263 @@ function dk_portainer_neu_anlegen()
         . ($token !== '' ? ' --setup-token ' . escapeshellarg($token) : '');
     list($aus, $fehler, $code) = dk_ausfuehren($befehl, 120);
     if ($code !== 0) {
-        dk_log('Neu anlegen: der Container ' . $name . ' wurde entfernt, docker run scheiterte '
-            . '(Rueckgabewert ' . $code . '): ' . ($fehler !== '' ? $fehler : 'ohne Meldung')
-            . ' - die Daten unter /opt/portainer sind unberuehrt.');
-        return array(false, 'RUN', $name, $fehler !== '' ? $fehler : 'rc ' . $code);
+        $grund = ($fehler !== '' ? $fehler : 'rc ' . $code);
+        // Zurueck: den neuen (falls halb angelegt) weg, den alten zurueck.
+        dk_ausfuehren('docker rm -f -- ' . escapeshellarg($name), 60);
+        list(, , $c1) = dk_ausfuehren('docker rename ' . escapeshellarg($altname) . ' ' . escapeshellarg($name), 30);
+        list(, , $c2) = ($c1 === 0) ? dk_ausfuehren('docker start -- ' . escapeshellarg($name), 60) : array('', '', 1);
+        dk_zustand(true);
+        dk_container(true);
+        if ($c1 === 0 && $c2 === 0) {
+            dk_log('Neu anlegen: docker run scheiterte (Rueckgabewert ' . $code . '): ' . $grund
+                . ' - der bisherige Container ' . $name . ' laeuft wieder unveraendert.');
+            return array(false, 'RUN', $name, $grund);
+        }
+        dk_log('Neu anlegen: docker run scheiterte (' . $grund . '), und der bisherige Container liess sich nicht '
+            . 'zurueckholen (umbenennen rc ' . $c1 . ', starten rc ' . $c2 . '). Er liegt als ' . ($c1 === 0 ? $name : $altname) . ' bereit.');
+        return array(false, 'RUN_ALT', $name, $grund . '; ' . ($c1 === 0 ? $name : $altname));
+    }
+    list(, $fehler, $code) = dk_ausfuehren('docker rm -f -- ' . escapeshellarg($altname), 60);
+    if ($code !== 0) {
+        dk_log('Neu anlegen: der alte Container ' . $altname . ' liess sich nicht entfernen (Rueckgabewert '
+            . $code . '): ' . ($fehler !== '' ? $fehler : 'ohne Meldung') . ' - bitte in Portainer entfernen.');
     }
     dk_log('Container ' . $name . ' neu angelegt (HTTP ' . $h . ', HTTPS ' . $s . ', Abbild ' . $bild
-        . ', Labels gesetzt, /opt/portainer beibehalten).');
+        . ', Labels gesetzt, Volumes des alten Containers beibehalten).');
     dk_zustand(true);
     dk_container(true);
     return array(true, 'OK', $name, $h . '/' . $s);
+}
+
+/* ---------------- Portainer-Abbild aktualisieren (Verbesserungsbau 30.09.2026, a1) ----------------
+ *
+ * Vorbild MGiSmart 1.1.19 (mg_gw_aktualisieren, bin/gateway_vorgang.php).
+ * Nur auf Knopfdruck, im Hintergrund (bin/dk_vorgang.php aktualisieren),
+ * nie im Seitenaufruf und nie aus dem Minutentakt: docker pull dauert auf
+ * einem Raspberry Pi Minuten. Angefasst wird NUR der eigene Container MIT
+ * Label (dk_eigen_urteil: LABEL); ein Altbestand ohne Label und jeder
+ * fremde Container bleiben unberuehrt (Entscheidung 9, Bauliste a1).
+ *   1. docker pull <Abbild des eigenen Containers>, Frist DK_PULL_SEK.
+ *   2. Vorher = die Kennung, mit der der Container laeuft (inspect .Image);
+ *      nachher = die Kennung des Abbilds nach dem Holen (image inspect .Id).
+ *      Gleich -> "schon aktuell", nichts neu angelegt.
+ *   3. Sonst dk_portainer_neu_anlegen() mit den Ports, die der Container
+ *      jetzt hat: derselbe Name, dieselben Ports, Labels, Einrichtungstoken,
+ *      /opt/portainer bleibt.
+ * ================================================================== */
+
+define('DK_PULL_SEK', 900);
+
+/** Die Zustandsdatei des Hintergrundvorgangs (0600, Datenordner). */
+function dk_vorgang_datei()
+{
+    return dk_paths()['datadir'] . '/portainer_vorgang.json';
+}
+
+function dk_vorgang_schreiben(array $d)
+{
+    $p = dk_paths();
+    if (!@is_dir($p['datadir'])) { @mkdir($p['datadir'], 0755, true); }
+    return dk_json_schreiben(dk_vorgang_datei(), $d, 0600);
+}
+
+/** Laeuft der Prozess $pid wirklich als bin/dk_vorgang.php? (argumentweise) */
+function dk_vorgang_prozess($pid)
+{
+    $pid = (int) $pid;
+    if ($pid <= 0 || !@is_readable('/proc/' . $pid . '/cmdline')) { return false; }
+    $a = explode("\0", (string) @file_get_contents('/proc/' . $pid . '/cmdline'));
+    return isset($a[1]) && basename($a[1]) === 'dk_vorgang.php'
+        && preg_match('#(^|/)php[0-9.]*\z#', (string) $a[0]) === 1;
+}
+
+/**
+ * Der Stand des Vorgangs. zustand: keiner | gestartet | laeuft | fertig |
+ * fehler | abgebrochen. "abgebrochen": die Datei sagt "laeuft", der Prozess
+ * ist aber fort - oder er ist nach 20 s nie angelaufen.
+ */
+function dk_vorgang()
+{
+    $d = dk_json_lesen(dk_vorgang_datei());
+    if (!isset($d['zustand']) || !is_string($d['zustand'])) { return array('zustand' => 'keiner'); }
+    $d += array('start' => 0, 'ende' => 0, 'pid' => 0, 'meldung' => '', 'art' => '');
+    if ($d['zustand'] === 'laeuft' && !dk_vorgang_prozess($d['pid'])) { $d['zustand'] = 'abgebrochen'; }
+    if ($d['zustand'] === 'gestartet' && time() - (int) $d['start'] > 20) { $d['zustand'] = 'abgebrochen'; }
+    return $d;
+}
+
+function dk_vorgang_laeuft()
+{
+    return in_array(dk_vorgang()['zustand'], array('gestartet', 'laeuft'), true);
+}
+
+/** Das Programm des Vorgangs: installiert unter bin/plugins/<ordner>/, sonst im Archiv. */
+function dk_vorgang_programm()
+{
+    $p = dk_paths();
+    $k = $p['home'] . '/bin/plugins/' . $p['plugin'] . '/dk_vorgang.php';
+    if (@is_file($k)) { return $k; }
+    return dirname(dirname(__DIR__)) . '/bin/dk_vorgang.php';
+}
+
+/**
+ * Den Vorgang im Hintergrund starten. Kein Warten im Seitenaufbau. Die
+ * Pruefung "laeuft schon?" und das Anlegen der Zustandsdatei stehen unter
+ * einer kurzen Sperre (zwei Klicks nacheinander starten nicht zwei
+ * Vorgaenge); freigegeben wird sie VOR dem Abzweigen, damit der Vorgang
+ * sie nicht erbt. Rueckgabe array(ok, satz) - Klartext ohne Auszeichnung.
+ */
+function dk_vorgang_starten($auftrag = 'aktualisieren')
+{
+    // Nachtrag 01.10.2026: zweiter Auftrag "label" (Altbestand mit Label neu anlegen).
+    if (!in_array($auftrag, array('aktualisieren', 'label'), true)) {
+        return array(false, dk_t('VORGANG.START'));
+    }
+    $p = dk_paths();
+    if (!@is_dir($p['datadir'])) { @mkdir($p['datadir'], 0755, true); }
+    $sperrdatei = $p['datadir'] . '/portainer_vorgang.lock';
+    $sperre = @fopen($sperrdatei, 'ce');
+    if ($sperre === false) { $sperre = @fopen($sperrdatei, 'c'); }
+    if ($sperre === false) { return array(false, dk_t('VORGANG.DATEI')); }
+    if (!flock($sperre, LOCK_EX | LOCK_NB)) {
+        fclose($sperre);
+        return array(false, dk_t('VORGANG.LAEUFT_SCHON'));
+    }
+    $grund = '';
+    $prog = dk_vorgang_programm();
+    if (dk_vorgang_laeuft()) {
+        $grund = dk_t('VORGANG.LAEUFT_SCHON');
+    } elseif (!@is_file($prog) || !function_exists('proc_open')) {
+        $grund = sprintf(dk_t('VORGANG.FEHLT'), $prog);
+    } elseif (!dk_vorgang_schreiben(array('vorgang' => $auftrag, 'zustand' => 'gestartet',
+            'start' => time(), 'pid' => 0, 'meldung' => ''))) {
+        $grund = dk_t('VORGANG.DATEI');
+    }
+    flock($sperre, LOCK_UN);
+    fclose($sperre);
+    if ($grund !== '') { return array(false, $grund); }
+    $desk = array(0 => array('file', '/dev/null', 'r'), 1 => array('file', '/dev/null', 'w'),
+                  2 => array('file', '/dev/null', 'w'));
+    $pipes = array();
+    // setsid loest den Vorgang vom Webserver; "&" laesst die Schale sofort enden.
+    $proc = @proc_open(array('sh', '-c', 'setsid "$0" "$@" </dev/null >/dev/null 2>&1 &',
+        'php', $prog, $auftrag), $desk, $pipes);
+    if (!is_resource($proc)) {
+        dk_vorgang_schreiben(array('vorgang' => $auftrag, 'zustand' => 'fehler', 'start' => time(),
+            'ende' => time(), 'pid' => 0, 'art' => 'fehler', 'meldung' => dk_t('VORGANG.START')));
+        return array(false, dk_t('VORGANG.START'));
+    }
+    proc_close($proc);
+    dk_log('Portainer ' . ($auftrag === 'label' ? 'mit Label neu anlegen' : 'aktualisieren')
+        . ': Hintergrundvorgang gestartet.');
+    for ($i = 0; $i < 20; $i++) {
+        if (dk_vorgang()['zustand'] !== 'gestartet') { break; }
+        usleep(100000);
+    }
+    return array(true, dk_t($auftrag === 'label' ? 'VORGANG.GESTARTET_LABEL' : 'VORGANG.GESTARTET'));
+}
+
+/**
+ * Nachtrag 01.10.2026 (Offen 1): den eigenen ALTBESTAND ohne Label mit
+ * denselben Ports, Volumes und Token neu anlegen und dabei die Labels
+ * vergeben - danach gibt es den Knopf zum Aktualisieren. Vom
+ * Hintergrundvorgang gerufen (bin/dk_vorgang.php label). Nur ein
+ * Altbestand nach Entscheidung 9 (Name portainer UND Abbild
+ * portainer/portainer-*); jeder andere Container bleibt unberuehrt.
+ * Rueckgabe array(ok, satz, art) wie dk_portainer_aktualisieren().
+ */
+function dk_portainer_label_anlegen()
+{
+    list($ok, , $grundtext) = dk_zustand(true);
+    if (!$ok) { return array(false, sprintf(dk_t('AKT.DOCKER'), $grundtext), 'fehler'); }
+    list($eok, $eigen) = dk_eigener_container(true);
+    if (!$eok) { return array(false, dk_t('AKT.NICHT_PRUEFBAR'), 'fehler'); }
+    if ($eigen === null) { return array(false, dk_t('AKT.KEIN_EIGENER'), 'fehler'); }
+    if ($eigen[1] === 'LABEL') { return array(true, sprintf(dk_t('AKT.LABEL_SCHON'), $eigen[0]), 'aktuell'); }
+    if ($eigen[1] !== 'ALTBESTAND') { return array(false, dk_t('AKT.KEIN_EIGENER'), 'fehler'); }
+    list($pi_ok, $pi_h, $pi_s) = dk_portainer_ports_ist();
+    $ports = ($pi_ok && $pi_h > 0 && $pi_s > 0) ? array($pi_h, $pi_s) : null;
+    list($na_ok, $na_grund, $na_name, $na_detail) = dk_portainer_neu_anlegen($ports);
+    if (!$na_ok) {
+        $t = dk_t('FEHLER.NEU_ANLEGEN_' . $na_grund);
+        $t = ($na_grund === 'PORT_BELEGT') ? sprintf($t, (int) $na_detail) : sprintf($t, $na_name, $na_detail);
+        return array(false, sprintf(dk_t('AKT.LABEL_FEHLER'), trim(strip_tags($t))), 'fehler');
+    }
+    $np = explode('/', $na_detail);
+    return array(true, sprintf(dk_t('AKT.LABEL_NEU'), $na_name, (int) $np[0],
+        (int) (isset($np[1]) ? $np[1] : 0)), 'neu');
+}
+
+/** Die Kennung eines Abbilds (docker image inspect), oder ''. */
+function dk_abbild_kennung($bild)
+{
+    list($aus, $fehler, $code) = dk_ausfuehren('docker image inspect --format '
+        . escapeshellarg('{{.Id}}') . ' -- ' . escapeshellarg($bild));
+    $id = trim($aus);
+    return ($code === 0 && preg_match('/^(sha256:)?[0-9a-f]{12,64}\z/', $id)) ? $id : '';
+}
+
+/** Eine Kennung kurz fuer Menschen: sha256: und zwoelf Zeichen. */
+function dk_kennung_kurz($id)
+{
+    if (preg_match('/^(sha256:)?([0-9a-f]{12})[0-9a-f]*\z/', (string) $id, $m)) {
+        return 'sha256:' . $m[2];
+    }
+    return dk_t('AKT.UNBEKANNT');
+}
+
+/**
+ * Das Abbild holen und den eigenen Container bei neuer Kennung neu anlegen.
+ * Vom Hintergrundvorgang gerufen. Rueckgabe array(ok, satz, art) mit art
+ * aktuell | neu | fehler; der Satz ist Klartext ohne Auszeichnung.
+ */
+function dk_portainer_aktualisieren()
+{
+    list($ok, , $grundtext) = dk_zustand(true);
+    if (!$ok) { return array(false, sprintf(dk_t('AKT.DOCKER'), $grundtext), 'fehler'); }
+    list($eok, $eigen) = dk_eigener_container(true);
+    if (!$eok) { return array(false, dk_t('AKT.NICHT_PRUEFBAR'), 'fehler'); }
+    if ($eigen === null) { return array(false, dk_t('AKT.KEIN_EIGENER'), 'fehler'); }
+    if ($eigen[1] !== 'LABEL') { return array(false, sprintf(dk_t('AKT.OHNE_LABEL'), $eigen[0]), 'fehler'); }
+    $name = $eigen[0];
+    $bild = $eigen[2];
+    if (!dk_name_gueltig($name) || !preg_match('#^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}\z#', $bild)) {
+        return array(false, dk_t('AKT.UNBRAUCHBAR'), 'fehler');
+    }
+    list($aus, , $code) = dk_ausfuehren('docker inspect --type container --format '
+        . escapeshellarg('{{.Image}}') . ' -- ' . escapeshellarg($name));
+    $vorher = ($code === 0 && preg_match('/^(sha256:)?[0-9a-f]{12,64}\z/', trim($aus))) ? trim($aus) : '';
+    // Die Ports, die er jetzt hat - VOR dem Neuanlegen gelesen.
+    list($pi_ok, $pi_h, $pi_s) = dk_portainer_ports_ist();
+    list($aus, $fehler, $code) = dk_ausfuehren('docker pull -- ' . escapeshellarg($bild), DK_PULL_SEK);
+    if (dk_zeitueberschreitung($code)) {
+        return array(false, sprintf(dk_t('AKT.PULL_ZEIT'), DK_PULL_SEK), 'fehler');
+    }
+    if ($code !== 0) {
+        $f = preg_replace('/\s+/', ' ', trim($fehler));
+        return array(false, sprintf(dk_t('AKT.PULL_FEHLER'), $code,
+            strlen($f) > 200 ? substr($f, 0, 200) . '...' : $f), 'fehler');
+    }
+    $nachher = dk_abbild_kennung($bild);
+    if ($nachher === '') { return array(false, dk_t('AKT.KEINE_KENNUNG'), 'fehler'); }
+    if ($vorher !== '' && $vorher === $nachher) {
+        dk_log('Portainer aktualisieren: ' . $bild . ' ist schon aktuell (' . dk_kennung_kurz($nachher)
+            . '), nichts neu angelegt.');
+        return array(true, sprintf(dk_t('AKT.AKTUELL'), dk_kennung_kurz($nachher)), 'aktuell');
+    }
+    $ports = ($pi_ok && $pi_h > 0 && $pi_s > 0) ? array($pi_h, $pi_s) : null;
+    list($na_ok, $na_grund, $na_name, $na_detail) = dk_portainer_neu_anlegen($ports);
+    if (!$na_ok) {
+        $t = dk_t('FEHLER.NEU_ANLEGEN_' . $na_grund);
+        $t = ($na_grund === 'PORT_BELEGT') ? sprintf($t, (int) $na_detail) : sprintf($t, $na_name, $na_detail);
+        return array(false, sprintf(dk_t('AKT.NEU_FEHLER'), trim(strip_tags($t))), 'fehler');
+    }
+    $np = explode('/', $na_detail);
+    dk_log('Portainer aktualisieren: neues Abbild ' . dk_kennung_kurz($nachher) . ' statt '
+        . ($vorher !== '' ? dk_kennung_kurz($vorher) : 'unbekannt') . ', Container ' . $na_name . ' neu angelegt.');
+    return array(true, sprintf(dk_t('AKT.NEU'), dk_kennung_kurz($nachher),
+        $vorher !== '' ? dk_kennung_kurz($vorher) : dk_t('AKT.UNBEKANNT'), $na_name,
+        (int) $np[0], (int) (isset($np[1]) ? $np[1] : 0)), 'neu');
 }
 
 /* ---------------- Protokoll ----------------
@@ -3186,8 +3682,11 @@ function dk_schluesselkollisionen($liste = null)
  *
  * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
  */
-function dk_sicherung_lesen($roh)
+function dk_sicherung_lesen($roh, &$namen = null)
 {
+    /* $namen (X-3, Verbesserungsbau 30.09.2026): die NAMEN der beanstandeten
+     * Schluessel, nie Werte - fuer die Warnung beim Sichern
+     * (dk_rueckspiel_maengel). */
     /* Rueckgabe seit 1.3.9: array(Konfiguration|null, Beanstandungen[],
      * uebernommene Werte, Hinweise[]).
      *
@@ -3208,6 +3707,7 @@ function dk_sicherung_lesen($roh)
      */
     $mangel = array();
     $hinweis = array();
+    $namen = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
         return array(null, array(dk_t('EINST.SICH_KEIN_JSON')), 0, array());
@@ -3222,6 +3722,7 @@ function dk_sicherung_lesen($roh)
             if (!dk_name_gueltig($w)) {
                 $mangel[] = sprintf(dk_t('EINST.SICH_WERT'), dk_e($k), dk_e(dk_wert_zeigen($w)),
                                     dk_t('FEHLER.NAME'));
+                $namen[] = $k;
             } else {
                 $hinweis[] = sprintf(dk_t('EINST.SICH_VERALTET'), dk_e($k));
             }
@@ -3229,11 +3730,13 @@ function dk_sicherung_lesen($roh)
         }
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(dk_t('EINST.SICH_FREMD'), dk_e($k));
+            $namen[] = $k;
             continue;
         }
         list($ok, $norm, $warum) = dk_wert_pruefen($k, $w);
         if (!$ok) {
             $mangel[] = sprintf(dk_t('EINST.SICH_WERT'), dk_e($k), dk_e(dk_wert_zeigen($w)), $warum);
+            $namen[] = $k;
             continue;
         }
         $neu[$k] = $norm;
@@ -3261,8 +3764,11 @@ function dk_sicherung_lesen($roh)
     }
     if (!$mangel && (int) $neu['portainer_port'] === (int) $neu['portainer_https_port']) {
         $mangel[] = dk_t('FEHLER.PORT_GLEICH');
+        $namen[] = 'portainer_port';
+        $namen[] = 'portainer_https_port';
     }
     if ($fehlend) {
+        $namen = array_merge($namen, $fehlend);
         $mangel[] = sprintf(dk_t('EINST.SICH_FEHLEND'), count($fehlend),
             dk_e(implode(', ', $fehlend)));
     }
@@ -3297,4 +3803,25 @@ function dk_sicherung_bauen()
         $aus[$k] = $cfg[$k];
     }
     return $aus;
+}
+
+/**
+ * X-3 (Verbesserungsbau 30.09.2026): Wuerde die EIGENE Sicherung das eigene
+ * Zurueckspielen bestehen? Geprueft wird mit DERSELBEN Funktion wie beim
+ * Zurueckspielen (dk_sicherung_lesen). Rueckgabe: die Namen der
+ * beanstandeten Schluessel, nie Werte; leer = sie besteht.
+ * Anlass: dk_config_normieren() laesst beim Lesen Ports von 1 bis 65535
+ * durch, das Zurueckspielen verlangt 1024 bis 65535 - ein von Hand
+ * eingetragener Port 80 stand in der Sicherung, und die eigene Datei wurde
+ * danach abgewiesen.
+ */
+function dk_rueckspiel_maengel($aus = null)
+{
+    if ($aus === null) { $aus = dk_sicherung_bauen(); }
+    $js = json_encode($aus, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if ($js === false) { return array('json'); }
+    $namen = array();
+    list($neu) = dk_sicherung_lesen($js, $namen);
+    if ($neu !== null) { return array(); }
+    return $namen ? array_values(array_unique($namen)) : array('?');
 }

@@ -66,6 +66,9 @@ $dk_cfg     = dk_config();
 $dk_token   = dk_token();          // erzeugt sich beim ersten Aufruf selbst
 $dk_meldung = '';
 $dk_fehler  = array();             // gesammelt, nicht ueberschrieben
+// X-2 (Verbesserungsbau 30.09.2026): welche Felder beanstandet wurden -
+// daraus reisen die Eingaben mit der Einmalmeldung (dk_mit_eingaben).
+$dk_beanstandet = array();
 $dk_setup   = '';
 $dk_rohlog  = '';
 $dk_fmt     = dk_formtoken();      // Merkmal gegen fremde Formulare
@@ -153,6 +156,7 @@ if ($dk_flash) {
     }
     if (!empty($dk_flash['setup']))  { $dk_setup  = (string) $dk_flash['setup']; }
     if (!empty($dk_flash['rohlog'])) { $dk_rohlog = (string) $dk_flash['rohlog']; }
+    if (isset($dk_flash['eingaben'])) { dk_eingaben_setzen($dk_flash['eingaben']); }
 }
 $dk_takt_ergebnis = (!empty($dk_flash['takt']) && is_array($dk_flash['takt']))
                     ? $dk_flash['takt'] : null;
@@ -214,6 +218,7 @@ if (($_POST['speichern'] ?? '') === '1') {
                ? trim($_POST['portainer_port']) : '';
     if (!preg_match('/^[0-9]{1,5}$/', $dk_port) || (int) $dk_port < 1024 || (int) $dk_port > 65535) {
         $dk_fehler[] = dk_t('FEHLER.PORT');
+        $dk_beanstandet[] = 'portainer_port';
     } else {
         $dk_neu['portainer_port'] = (int) $dk_port;
     }
@@ -223,12 +228,15 @@ if (($_POST['speichern'] ?? '') === '1') {
         $dk_sport = is_string($_POST['portainer_https_port']) ? trim($_POST['portainer_https_port']) : '';
         if (!preg_match('/^[0-9]{1,5}$/', $dk_sport) || (int) $dk_sport < 1024 || (int) $dk_sport > 65535) {
             $dk_fehler[] = dk_t('FEHLER.PORT_HTTPS');
+            $dk_beanstandet[] = 'portainer_https_port';
         } else {
             $dk_neu['portainer_https_port'] = (int) $dk_sport;
         }
     }
     if (!$dk_fehler && (int) $dk_neu['portainer_port'] === (int) $dk_neu['portainer_https_port']) {
         $dk_fehler[] = dk_t('FEHLER.PORT_GLEICH');
+        $dk_beanstandet[] = 'portainer_port';
+        $dk_beanstandet[] = 'portainer_https_port';
     }
     $dk_ports_geaendert = (int) $dk_neu['portainer_port'] !== (int) $dk_cfg['portainer_port']
         || (int) $dk_neu['portainer_https_port'] !== (int) $dk_cfg['portainer_https_port'];
@@ -248,6 +256,7 @@ if (($_POST['speichern'] ?? '') === '1') {
     if ($dk_gr !== '') {
         if (!preg_match('/^[0-9]{1,3}$/', $dk_gr) || (int) $dk_gr < 1 || (int) $dk_gr > 100) {
             $dk_fehler[] = dk_t('FEHLER.SCHLEIFE_GRENZE');
+            $dk_beanstandet[] = 'schleife_grenze';
         } else {
             $dk_neu['schleife_grenze'] = (int) $dk_gr;
         }
@@ -257,6 +266,7 @@ if (($_POST['speichern'] ?? '') === '1') {
     if ($dk_pg !== '') {
         if (!preg_match('/^[0-9]{1,7}$/', $dk_pg)) {
             $dk_fehler[] = dk_t('FEHLER.PLATZ_GRENZE');
+            $dk_beanstandet[] = 'platz_grenze_mb';
         } else {
             $dk_neu['platz_grenze_mb'] = (int) $dk_pg;
         }
@@ -283,7 +293,8 @@ if (($_POST['speichern'] ?? '') === '1') {
             $dk_fehler[] = dk_t('FEHLER.SCHREIBEN');
         }
     }
-    dk_weiter('settings', array('meldung' => $dk_meldung, 'fehler' => $dk_fehler));
+    dk_weiter('settings', dk_mit_eingaben(array('meldung' => $dk_meldung, 'fehler' => $dk_fehler),
+        'settings', $dk_beanstandet));
 }
 
 /* ---------------- Speichern: Wachliste (O1) ----------------
@@ -310,12 +321,14 @@ if (($_POST['speichern_wache'] ?? '') === '1') {
         foreach ($dk_wroh as $dk_wn) {
             if (!dk_name_gueltig($dk_wn)) {
                 $dk_fehler[] = dk_t('FEHLER.NAME');
+                $dk_beanstandet[] = 'wache_alle';
                 break;
             }
             if (!in_array($dk_wn, $dk_w, true)) { $dk_w[] = $dk_wn; }
         }
         if (!$dk_fehler && !$dk_w) {
             $dk_fehler[] = dk_t('FEHLER.WACHE_LEER');
+            $dk_beanstandet[] = 'wache_alle';
         }
         if (!$dk_fehler) { $dk_neu['wachliste'] = $dk_w; }
     }
@@ -327,7 +340,8 @@ if (($_POST['speichern_wache'] ?? '') === '1') {
             $dk_fehler[] = dk_t('FEHLER.SCHREIBEN');
         }
     }
-    dk_weiter('settings', array('meldung' => $dk_meldung, 'fehler' => $dk_fehler));
+    dk_weiter('settings', dk_mit_eingaben(array('meldung' => $dk_meldung, 'fehler' => $dk_fehler),
+        'wache', $dk_beanstandet));
 }
 
 /* ---------------- Speichern: MQTT ----------------
@@ -342,6 +356,7 @@ if (($_POST['speichern_mqtt'] ?? '') === '1') {
                ? trim($_POST['mqtt_praefix']) : '';
     if (!preg_match('/^[A-Za-z0-9_\-]{1,32}$/', $dk_prae)) {
         $dk_fehler[] = dk_t('FEHLER.MQTT_PRAEFIX');
+        $dk_beanstandet[] = 'mqtt_praefix';
     } else {
         $dk_neu['mqtt_praefix'] = $dk_prae;
     }
@@ -368,7 +383,8 @@ if (($_POST['speichern_mqtt'] ?? '') === '1') {
             $dk_fehler[] = dk_t('FEHLER.SCHREIBEN');
         }
     }
-    dk_weiter('mqtt', array('meldung' => $dk_meldung, 'fehler' => $dk_fehler));
+    dk_weiter('mqtt', dk_mit_eingaben(array('meldung' => $dk_meldung, 'fehler' => $dk_fehler),
+        'mqtt', $dk_beanstandet));
 }
 
 /* ---------------- Minutentakt von Hand ausloesen ----------------
@@ -441,6 +457,12 @@ if (isset($_POST['log_leeren'])) {
  * und beide erzeugten eine orange Fehlerbox ohne jede Bestaetigung, dass der
  * Neustart geklappt hat.
  */
+if (isset($_POST['portainerneu']) && dk_vorgang_laeuft()) {
+    /* a1: waehrend der Hintergrundvorgang den Container ersetzt, startet
+     * der Knopf ihn nicht dazwischen neu. */
+    dk_weiter(((string) ($_POST['activetab'] ?? '') === 'tab-test') ? 'test' : 'settings',
+        array('fehler' => array(dk_t('FEHLER.VORGANG_LAEUFT'))));
+}
 if (isset($_POST['tokenzeigen']) || isset($_POST['portainerneu'])) {
     $dk_m = array();
     if (isset($_POST['portainerneu'])) {
@@ -488,6 +510,9 @@ if (isset($_POST['portainer_neu_anlegen'])) {
     if (empty($_POST['neu_anlegen_bestaetigt'])) {
         dk_weiter('settings', array('fehler' => array(dk_t('FEHLER.NEU_ANLEGEN_BESTAETIGEN'))));
     }
+    if (dk_vorgang_laeuft()) {
+        dk_weiter('settings', array('fehler' => array(dk_t('FEHLER.VORGANG_LAEUFT'))));
+    }
     dk_zeitgrenze(120);
     list($dk_na_ok, $dk_na_grund, $dk_na_name, $dk_na_detail) = dk_portainer_neu_anlegen();
     $dk_m = array();
@@ -499,12 +524,59 @@ if (isset($_POST['portainer_neu_anlegen'])) {
         $dk_m['fehler'] = array(sprintf(dk_t('FEHLER.NEU_ANLEGEN_PORT_BELEGT'), (int) $dk_na_detail));
     } elseif ($dk_na_grund === 'RM') {
         $dk_m['fehler'] = array(sprintf(dk_t('FEHLER.NEU_ANLEGEN_RM'), dk_e($dk_na_name), dk_e($dk_na_detail)));
+    } elseif ($dk_na_grund === 'VOLUMES') {
+        $dk_m['fehler'] = array(sprintf(dk_t('FEHLER.NEU_ANLEGEN_VOLUMES'), dk_e($dk_na_name)));
+    } elseif ($dk_na_grund === 'RUN_ALT') {
+        $dk_m['fehler'] = array(sprintf(dk_t('FEHLER.NEU_ANLEGEN_RUN_ALT'), dk_e($dk_na_name), dk_e($dk_na_detail)));
     } elseif ($dk_na_grund === 'RUN') {
         $dk_m['fehler'] = array(sprintf(dk_t('FEHLER.NEU_ANLEGEN_RUN'), dk_e($dk_na_name), dk_e($dk_na_detail)));
     } else {
         $dk_m['fehler'] = array(dk_t('FEHLER.NEU_ANLEGEN_' . $dk_na_grund));
     }
     dk_weiter('settings', $dk_m);
+}
+
+/* ---------------- Portainer-Abbild aktualisieren (a1) ----------------
+ *
+ * Verbesserungsbau 30.09.2026, Vorbild MGiSmart 1.1.19: im Hintergrund
+ * (bin/dk_vorgang.php), nie im Seitenaufruf. Nur der eigene Container MIT
+ * Label (Entscheidung 9) - das prueft der Handler vor dem Start und der
+ * Vorgang noch einmal selbst. Das Merkmal prueft der Wachposten oben. */
+if (isset($_POST['portainer_aktualisieren'])) {
+    list($dk_ak_ok, $dk_ak_eigen) = dk_eigener_container(true);
+    if (!$dk_ak_ok) {
+        dk_weiter('settings', array('fehler' => array(dk_e(dk_t('AKT.NICHT_PRUEFBAR')))));
+    }
+    if ($dk_ak_eigen === null) {
+        dk_weiter('settings', array('fehler' => array(dk_e(dk_t('AKT.KEIN_EIGENER')))));
+    }
+    if ($dk_ak_eigen[1] !== 'LABEL') {
+        dk_weiter('settings', array('fehler' => array(dk_e(sprintf(dk_t('AKT.OHNE_LABEL'), $dk_ak_eigen[0])))));
+    }
+    list($dk_ak_gut, $dk_ak_satz) = dk_vorgang_starten();
+    dk_weiter('settings', $dk_ak_gut ? array('meldung' => $dk_ak_satz)
+                                     : array('fehler' => array(dk_e($dk_ak_satz))));
+}
+
+/* ---------------- Altbestand mit Label neu anlegen (Nachtrag 01.10.2026) ----------------
+ *
+ * Nur der eigene Altbestand ohne Label (Entscheidung 9), nur mit Haken, im
+ * Hintergrund (bin/dk_vorgang.php label). Danach traegt er die Labels, und
+ * der Knopf zum Aktualisieren (a1) erscheint. */
+if (isset($_POST['portainer_label_anlegen'])) {
+    if (empty($_POST['label_bestaetigt'])) {
+        dk_weiter('settings', array('fehler' => array(dk_t('FEHLER.LABEL_BESTAETIGEN'))));
+    }
+    list($dk_lb_ok, $dk_lb_eigen) = dk_eigener_container(true);
+    if (!$dk_lb_ok) {
+        dk_weiter('settings', array('fehler' => array(dk_e(dk_t('AKT.NICHT_PRUEFBAR')))));
+    }
+    if ($dk_lb_eigen === null || $dk_lb_eigen[1] !== 'ALTBESTAND') {
+        dk_weiter('settings', array('fehler' => array(dk_e(dk_t('AKT.KEIN_ALTBESTAND')))));
+    }
+    list($dk_lb_gut, $dk_lb_satz) = dk_vorgang_starten('label');
+    dk_weiter('settings', $dk_lb_gut ? array('meldung' => $dk_lb_satz)
+                                     : array('fehler' => array(dk_e($dk_lb_satz))));
 }
 
 $dk_da    = dk_bin();
@@ -567,7 +639,17 @@ if (@is_readable('/etc/docker/daemon.json')) {
  * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
  * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dk_sichern'])) {
-    $dk_js = json_encode(dk_sicherung_bauen(),
+    /* X-3 (Verbesserungsbau 30.09.2026): wuerde diese Sicherung das eigene
+     * Zurueckspielen nicht bestehen, steht das als _warnung im Kopf - nur
+     * Namen, nie Werte. Geliefert wird sie trotzdem vollstaendig; das
+     * Zurueckspielen uebergeht Schluessel mit '_'. */
+    $dk_sich = dk_sicherung_bauen();
+    $dk_sich_namen = dk_rueckspiel_maengel($dk_sich);
+    if ($dk_sich_namen) {
+        $dk_sich = array('_warnung' => sprintf(dk_t('EINST.SICH_WARN_KOPF'), implode(', ', $dk_sich_namen)))
+            + $dk_sich;
+    }
+    $dk_js = json_encode($dk_sich,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($dk_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
@@ -715,6 +797,8 @@ if (class_exists('LBWeb', false)) {
 .sm-an  { color: #1a7f1a; font-weight: 700; }
 .sm-aus { color: #b00000; font-weight: 700; }
 .sm-setup { font-size: 1.05em; font-weight: 700; letter-spacing: 0.03em; user-select: all; }
+/* X-2: das beanstandete Feld nach der Umleitung (eigene Zutat, nicht aus der Vorlage). */
+.sm-beanstandet { outline: 2px solid #b00000 !important; outline-offset: 1px; }
 </style>
 
 <div class="sm-wrap">
@@ -735,6 +819,9 @@ if (class_exists('LBWeb', false)) {
 <?php } ?>
 <?php foreach ($dk_fehler as $dk_f) { ?>
 <div class="sm-warnung"><?= $dk_f ?></div>
+<?php } ?>
+<?php if (dk_eingaben_aktiv() !== '') { ?>
+<div class="sm-hinweis"><?= dk_t('EINST.EINGABEN') ?></div>
 <?php } ?>
 
 <div class="sm-tabs">
@@ -836,6 +923,49 @@ if ($dk_pi_ok) { ?>
 <?php if ($dk_eigen_ok && $dk_eigen_fremde) { ?>
 <div class="sm-hinweis"><?= dk_t('EIGEN.FREMDE_TITEL') ?> <?= dk_eigen_hinweis($dk_eigen_fremde) ?></div>
 <?php } ?>
+<?php
+/* a1 (Verbesserungsbau 30.09.2026): das Abbild des eigenen Portainer
+ * aktualisieren. Der Knopf steht nur bei einem Container MIT Label; laeuft
+ * der Vorgang, steht sein Stand da, und die Seite laedt sich neu. */
+$dk_vg = dk_vorgang();
+$dk_vg_laeuft = in_array($dk_vg['zustand'], array('gestartet', 'laeuft'), true);
+?>
+<h3><?= dk_e(dk_t('EINST.AKTUALISIEREN')) ?></h3>
+<?php if ($dk_vg_laeuft) { ?>
+<?php if ($dk_tab === 'tab-settings') { ?>
+<meta http-equiv="refresh" content="5;url=index.php?form=settings">
+<?php } ?>
+<div class="sm-hinweis"><?= dk_e(sprintf(dk_t((isset($dk_vg['vorgang']) && $dk_vg['vorgang'] === 'label')
+    ? 'VORGANG.SEIT_LABEL' : 'VORGANG.SEIT'), max(0, time() - (int) $dk_vg['start']))) ?></div>
+<?php } elseif ($dk_eigen_ok && $dk_eigen !== null && $dk_eigen[1] === 'LABEL') { ?>
+<p class="sm-hilfe"><?= sprintf(dk_t('EINST.H_AKTUALISIEREN'), dk_e($dk_eigen[2])) ?></p>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<div class="sm-knopfreihe">
+	<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="portainer_aktualisieren" value="1"><?= dk_e(dk_t('EINST.B_AKTUALISIEREN')) ?></button>
+</div>
+</form>
+<?php } elseif ($dk_eigen_ok && $dk_eigen !== null) { ?>
+<div class="sm-hinweis"><?= sprintf(dk_t('EINST.AKT_ALTBESTAND'), dk_e($dk_eigen[0])) ?></div>
+<?php if ($dk_eigen[1] === 'ALTBESTAND') { /* Nachtrag 01.10.2026: einmal mit Label neu anlegen */ ?>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<p class="sm-hilfe"><?= dk_t('EINST.H_LABEL_ANLEGEN') ?></p>
+<div class="sm-knopfreihe">
+	<label style="display:flex; align-items:center; gap:6px; margin-right:10px;"><input data-role="none" type="checkbox" name="label_bestaetigt" value="1"> <?= sprintf(dk_t('EINST.L_LABEL_OK'), dk_e($dk_eigen[0])) ?></label>
+	<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="portainer_label_anlegen" value="1"><?= dk_e(dk_t('EINST.B_LABEL_ANLEGEN')) ?></button>
+</div>
+</form>
+<?php } ?>
+<?php } else { ?>
+<p class="sm-hilfe"><?= dk_e(dk_t('EINST.AKT_KEIN_EIGENER')) ?></p>
+<?php } ?>
+<?php if (in_array($dk_vg['zustand'], array('fertig', 'fehler', 'abgebrochen'), true)) { ?>
+<div class="<?= $dk_vg['zustand'] === 'fertig' ? 'sm-hinweis' : 'sm-warnung' ?>"><b><?= dk_e(dk_t('VORGANG.' . strtoupper($dk_vg['zustand']))) ?></b>
+(<?= dk_e(date('Y-m-d H:i:s', (int) ($dk_vg['ende'] ? $dk_vg['ende'] : $dk_vg['start']))) ?>)<?= (string) $dk_vg['meldung'] !== '' ? ': ' . dk_e((string) $dk_vg['meldung']) : '' ?></div>
+<?php } ?>
 
 <h3><?= dk_e(dk_t('EINST.SETUPTOKEN')) ?></h3>
 <p class="sm-hilfe"><?= dk_t('EINST.SETUPTOKEN_TEXT') ?></p>
@@ -885,6 +1015,20 @@ if ($dk_fehlende) { ?>
 <span class="sm-mono"><?= dk_e(implode(', ', $dk_fehlende)) ?></span><br>
 <span class="sm-hilfe"><?= dk_t('EINST.H_FEHLT') ?></span></div>
 <?php } ?>
+<?php
+/* X-5 (Verbesserungsbau 30.09.2026): Container, deren Plugin es auf diesem
+ * LoxBerry nicht mehr gibt - nur ein Hinweis, kein Knopf. Entfernen
+ * entscheidet der Anwender in Portainer. */
+$dk_verwaist = array();
+foreach ($dk_z['liste'] as $dk_c) {
+    $dk_pz = dk_plugin_zuordnung($dk_c);
+    if ($dk_pz[2] === 'VERWAIST') { $dk_verwaist[] = $dk_c['name'] . ' (' . $dk_pz[0] . ')'; }
+}
+if ($dk_verwaist) { ?>
+<div class="sm-hinweis"><b><?= dk_e(dk_t('EINST.T_VERWAIST')) ?></b>
+<span class="sm-mono"><?= dk_e(implode(', ', $dk_verwaist)) ?></span><br>
+<span class="sm-hilfe"><?= dk_t('EINST.H_VERWAIST') ?></span></div>
+<?php } ?>
 <?php if ($dk_z['liste']) { ?>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
@@ -892,14 +1036,17 @@ if ($dk_fehlende) { ?>
 <input data-role="none" type="hidden" name="wache_gesetzt" value="1">
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th><?= dk_e(dk_t('EINST.T_WACHE')) ?></th><th><?= dk_e(dk_t('EINST.T_NAME')) ?></th><th><?= dk_e(dk_t('EINST.T_ABBILD')) ?></th><th><?= dk_e(dk_t('EINST.T_STAND')) ?></th><th><?= dk_e(dk_t('EINST.T_GESUND')) ?></th><th><?= dk_e(dk_t('EINST.T_AUTOSTART')) ?></th><th><?= dk_e(dk_t('EINST.T_ZUSTAND')) ?></th><th><?= dk_e(dk_t('EINST.T_PORTS')) ?></th></tr>
+<tr><th><?= dk_e(dk_t('EINST.T_WACHE')) ?></th><th><?= dk_e(dk_t('EINST.T_NAME')) ?></th><th><?= dk_e(dk_t('EINST.T_ABBILD')) ?></th><th><?= dk_e(dk_t('EINST.T_PLUGIN')) ?></th><th><?= dk_e(dk_t('EINST.T_STAND')) ?></th><th><?= dk_e(dk_t('EINST.T_GESUND')) ?></th><th><?= dk_e(dk_t('EINST.T_AUTOSTART')) ?></th><th><?= dk_e(dk_t('EINST.T_ZUSTAND')) ?></th><th><?= dk_e(dk_t('EINST.T_PORTS')) ?></th></tr>
 <?php $dk_seitenhost = dk_seitenhost(); ?>
+<?php $dk_wl = dk_eingabe_liste('wache', 'wache'); /* X-2: nach einer Beanstandung die angehakten */ ?>
 <?php foreach ($dk_z['liste'] as $dk_c) { ?>
 <tr><td><input data-role="none" type="checkbox" name="wache[]" value="<?= dk_e($dk_c['name']) ?>"
-	<?= ($dk_alle_ueberwacht || in_array($dk_c['name'], $dk_wache, true)) ? 'checked' : '' ?>></td>
+	<?= ($dk_wl !== null ? in_array($dk_c['name'], $dk_wl, true)
+	     : ($dk_alle_ueberwacht || in_array($dk_c['name'], $dk_wache, true))) ? 'checked' : '' ?>></td>
 	<td><span class="sm-mono"><?= dk_e($dk_c['name']) ?></span></td>
 	<td><?= dk_e($dk_c['image']) ?><?php if (isset($dk_updates[$dk_c['name']]) && (int) $dk_updates[$dk_c['name']] === 1) { ?>
 		<br><span class="sm-hilfe"><?= dk_e(dk_t('EINST.T_UPDATE')) ?></span><?php } ?></td>
+	<td><?= dk_plugin_html($dk_c) /* X-5: fertig maskiert */ ?></td>
 	<td class="<?= $dk_c['laeuft'] ? 'sm-an' : ($dk_c['ausfall'] ? 'sm-aus' : '') ?>"><?= dk_e(dk_t('STAND.' . strtoupper($dk_c['zustand']))) ?></td>
 	<td class="<?= $dk_c['gesund'] === 3 ? 'sm-aus' : ($dk_c['gesund'] === 2 ? 'sm-an' : '') ?>"><?= dk_e(dk_t('GESUND.G' . (int) $dk_c['gesund'])) ?></td>
 	<td class="<?= $dk_c['autostart'] === 0 ? 'sm-aus' : '' ?>"><?= dk_e(dk_t('AUTOSTART.A' . (int) $dk_c['autostart'])) ?></td>
@@ -909,7 +1056,7 @@ if ($dk_fehlende) { ?>
 </table>
 </div>
 <div class="sm-feld">
-	<label><input data-role="none" type="checkbox" name="wache_alle" value="1" <?= $dk_alle_ueberwacht ? 'checked' : '' ?>>
+	<label><input data-role="none" type="checkbox" name="wache_alle" value="1" <?= dk_eingabe_an('wache', 'wache_alle', $dk_alle_ueberwacht) ? 'checked' : '' ?><?= dk_markierung('wache_alle') ?>>
 	<?= dk_e(dk_t('EINST.L_WACHE_ALLE')) ?></label>
 	<p class="sm-hilfe"><?= dk_t('EINST.H_WACHE') ?></p>
 </div>
@@ -934,39 +1081,39 @@ if ($dk_fehlende) { ?>
 <div class="sm-feld">
 	<label for="portainer_port"><?= dk_e(dk_t('EINST.L_PORT')) ?></label>
 	<input data-role="none" type="text" id="portainer_port" name="portainer_port"
-	       value="<?= dk_e($dk_cfg['portainer_port']) ?>" size="8">
+	       value="<?= dk_e(dk_eingabe('settings', 'portainer_port', $dk_cfg['portainer_port'])) ?>" size="8"<?= dk_markierung('portainer_port') ?>>
 	<p class="sm-hilfe"><?= dk_t('EINST.H_PORT') ?></p>
 </div>
 <div class="sm-feld">
 	<label for="portainer_https_port"><?= dk_e(dk_t('EINST.L_PORT_HTTPS')) ?></label>
 	<input data-role="none" type="text" id="portainer_https_port" name="portainer_https_port"
-	       value="<?= dk_e($dk_cfg['portainer_https_port']) ?>" size="8">
+	       value="<?= dk_e(dk_eingabe('settings', 'portainer_https_port', $dk_cfg['portainer_https_port'])) ?>" size="8"<?= dk_markierung('portainer_https_port') ?>>
 	<p class="sm-hilfe"><?= dk_t('EINST.H_PORT_HTTPS') ?></p>
 </div>
 <div class="sm-feld">
 	<label for="schleife_grenze"><?= dk_e(dk_t('EINST.L_SCHLEIFE')) ?></label>
 	<input data-role="none" type="text" id="schleife_grenze" name="schleife_grenze"
-	       value="<?= dk_e($dk_cfg['schleife_grenze']) ?>" size="6">
+	       value="<?= dk_e(dk_eingabe('settings', 'schleife_grenze', $dk_cfg['schleife_grenze'])) ?>" size="6"<?= dk_markierung('schleife_grenze') ?>>
 	<p class="sm-hilfe"><?= dk_t('EINST.H_SCHLEIFE') ?></p>
 </div>
 <div class="sm-feld">
 	<label for="platz_grenze_mb"><?= dk_e(dk_t('EINST.L_PLATZ')) ?></label>
 	<input data-role="none" type="text" id="platz_grenze_mb" name="platz_grenze_mb"
-	       value="<?= dk_e($dk_cfg['platz_grenze_mb']) ?>" size="8">
+	       value="<?= dk_e(dk_eingabe('settings', 'platz_grenze_mb', $dk_cfg['platz_grenze_mb'])) ?>" size="8"<?= dk_markierung('platz_grenze_mb') ?>>
 	<p class="sm-hilfe"><?= dk_t('EINST.H_PLATZ') ?></p>
 </div>
 <div class="sm-feld">
-	<label><input data-role="none" type="checkbox" name="melden_aktiv" value="1" <?= $dk_cfg['melden_aktiv'] ? 'checked' : '' ?>>
+	<label><input data-role="none" type="checkbox" name="melden_aktiv" value="1" <?= dk_eingabe_an('settings', 'melden_aktiv', $dk_cfg['melden_aktiv']) ? 'checked' : '' ?>>
 	<?= dk_e(dk_t('EINST.L_MELDEN')) ?></label>
 	<p class="sm-hilfe"><?= dk_t('EINST.H_MELDEN') ?></p>
 </div>
 <div class="sm-feld">
-	<label><input data-role="none" type="checkbox" name="updates_aktiv" value="1" <?= $dk_cfg['updates_aktiv'] ? 'checked' : '' ?>>
+	<label><input data-role="none" type="checkbox" name="updates_aktiv" value="1" <?= dk_eingabe_an('settings', 'updates_aktiv', $dk_cfg['updates_aktiv']) ? 'checked' : '' ?>>
 	<?= dk_e(dk_t('EINST.L_UPDATES')) ?></label>
 	<p class="sm-hilfe"><?= dk_t('EINST.H_UPDATES') ?></p>
 </div>
 <div class="sm-feld">
-	<label><input data-role="none" type="checkbox" name="token_neu" value="1"> <?= dk_e(dk_t('EINST.L_TOKENNEU')) ?></label>
+	<label><input data-role="none" type="checkbox" name="token_neu" value="1"<?= dk_markierung('token_neu') ?>> <?= dk_e(dk_t('EINST.L_TOKENNEU')) ?></label>
 	<p class="sm-hilfe"><?= dk_t('EINST.H_TOKENNEU') ?></p>
 </div>
 <div class="sm-legende">
@@ -994,6 +1141,10 @@ if ($dk_fehlende) { ?>
 <h2><?= dk_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= dk_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= dk_t('EINST.SICH_WARNUNG') ?></div>
+<?php $dk_rueck = dk_rueckspiel_maengel(); /* X-3 */ ?>
+<?php if ($dk_rueck) { ?>
+<div class="sm-warnung"><?= sprintf(dk_t('EINST.SICH_WARN_RUECK'), dk_e(implode(', ', $dk_rueck))) ?></div>
+<?php } ?>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
@@ -1053,14 +1204,14 @@ if ($dk_fehlende) { ?>
 <input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <div class="sm-feld">
-	<label><input data-role="none" type="checkbox" name="mqtt_aktiv" value="1" <?= $dk_cfg['mqtt_aktiv'] ? 'checked' : '' ?>>
+	<label><input data-role="none" type="checkbox" name="mqtt_aktiv" value="1" <?= dk_eingabe_an('mqtt', 'mqtt_aktiv', $dk_cfg['mqtt_aktiv']) ? 'checked' : '' ?>>
 	<?= dk_e(dk_t('MQTT.L_AKTIV')) ?></label>
 	<p class="sm-hilfe"><?= dk_t('MQTT.H_AKTIV') ?></p>
 </div>
 <div class="sm-feld">
 	<label for="mqtt_praefix"><?= dk_e(dk_t('MQTT.L_PRAEFIX')) ?></label>
 	<input data-role="none" type="text" id="mqtt_praefix" name="mqtt_praefix"
-	       value="<?= dk_e($dk_cfg['mqtt_praefix']) ?>" size="24">
+	       value="<?= dk_e(dk_eingabe('mqtt', 'mqtt_praefix', $dk_cfg['mqtt_praefix'])) ?>" size="24"<?= dk_markierung('mqtt_praefix') ?>>
 	<p class="sm-hilfe"><?= dk_t('MQTT.H_PRAEFIX') ?></p>
 </div>
 <div class="sm-legende">

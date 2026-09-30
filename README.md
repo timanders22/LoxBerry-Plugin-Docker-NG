@@ -3,9 +3,34 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.9 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.10 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.10
+
+Verbesserungen aus dem Durchgang vom 30.09.2026 (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`). Gemessen an einer
+Docker-Attrappe unter PHP 7.4, 8.3 und 8.5; nicht am Gerät.
+
+* **Knopf „Portainer-Abbild aktualisieren“:** holt das Abbild im Hintergrund
+  (höchstens 15 min) und legt den eigenen Container nur bei einer neuen Kennung
+  neu an – mit denselben Ports, Volumes, Labels und dem Einrichtungstoken. Nur
+  für den Container mit Label, nie von selbst; solange er läuft, sind Neustart
+  und Neuanlegen gesperrt.
+* **Sicheres Neuanlegen:** Der alte Portainer wird erst angehalten und
+  umbenannt; entfernt wird er erst, wenn der neue läuft. Scheitert das Anlegen,
+  läuft der alte wieder. Bis 1.3.9 war Portainer nach einem gescheiterten
+  Neuanlegen fort.
+* **Altbestand ohne Label:** Knopf „Portainer neu anlegen (mit Label)“ mit
+  Bestätigungshaken; danach greift der Aktualisieren-Knopf.
+* **Spalte „Plugin“ in der Containerübersicht:** zeigt je Container das Plugin
+  (Label `de.loxberry.plugin.folder`, gesetzt von MGiSmart, Sprachsteuerung und
+  Matter2Lox) und weist auf Container von Plugins hin, die nicht mehr installiert
+  sind – ohne Entfernen-Knopf.
+* Nach einer Beanstandung stehen die eingetippten Werte markiert wieder im
+  Formular; gespeichert wird nichts. „Einstellungen sichern“ warnt, wenn die
+  Sicherung beim Zurückspielen abgewiesen würde (`_warnung` mit den Namen).
 
 ## Neu in 1.3.9 — Durchgang mit vier Prüfern (30.09.2026)
 
@@ -940,6 +965,7 @@ Miniserver nichts ankommt, und es gibt keine Fehlermeldung, die darauf hinweist.
                                      Zustand, MQTT, Loxone-Vorlage
     webfrontend/html/index.php       Endpunkt fuer den Miniserver
     bin/dockerng_takt.php            Minutentakt: Herzschlag, Schleifen, Platz, MQTT
+    bin/dk_vorgang.php               Hintergrundvorgang: Portainer-Abbild aktualisieren
     bin/healthcheck                  Anschluss an den LoxBerry-Healthcheck
     cron/cron.01min                  ruft den Minutentakt auf
     templates/lang/language_de.ini   Sprachdatei Deutsch
