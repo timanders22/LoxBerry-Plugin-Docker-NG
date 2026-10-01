@@ -222,16 +222,17 @@ if (($_POST['speichern'] ?? '') === '1') {
     } else {
         $dk_neu['portainer_port'] = (int) $dk_port;
     }
-    /* HTTPS-Port (C12). Fehlt das Feld (ein Formular von vor 1.3.9), bleibt
-     * der geltende Wert. */
-    if (isset($_POST['portainer_https_port'])) {
-        $dk_sport = is_string($_POST['portainer_https_port']) ? trim($_POST['portainer_https_port']) : '';
-        if (!preg_match('/^[0-9]{1,5}$/', $dk_sport) || (int) $dk_sport < 1024 || (int) $dk_sport > 65535) {
-            $dk_fehler[] = dk_t('FEHLER.PORT_HTTPS');
-            $dk_beanstandet[] = 'portainer_https_port';
-        } else {
-            $dk_neu['portainer_https_port'] = (int) $dk_sport;
-        }
+    /* HTTPS-Port (C12). Bis 1.3.11 blieb der geltende Wert stehen, wenn das
+     * Feld fehlte (ein Formular von vor 1.3.9) - ein still behaltener
+     * Altwert. Seit dem B-Nachzug (Entscheidung 19) ist ein fehlendes Feld
+     * eine Beanstandung wie ein leeres; das Formular sendet es immer. */
+    $dk_sport = (isset($_POST['portainer_https_port']) && is_string($_POST['portainer_https_port']))
+                ? trim($_POST['portainer_https_port']) : '';
+    if (!preg_match('/^[0-9]{1,5}$/', $dk_sport) || (int) $dk_sport < 1024 || (int) $dk_sport > 65535) {
+        $dk_fehler[] = dk_t('FEHLER.PORT_HTTPS');
+        $dk_beanstandet[] = 'portainer_https_port';
+    } else {
+        $dk_neu['portainer_https_port'] = (int) $dk_sport;
     }
     if (!$dk_fehler && (int) $dk_neu['portainer_port'] === (int) $dk_neu['portainer_https_port']) {
         $dk_fehler[] = dk_t('FEHLER.PORT_GLEICH');
@@ -252,24 +253,32 @@ if (($_POST['speichern'] ?? '') === '1') {
 
     /* Die Wachliste hat seit 1.3.9 ihren EIGENEN Handler (O1, unten). */
 
-    $dk_gr = trim((string) ($_POST['schleife_grenze'] ?? ''));
-    if ($dk_gr !== '') {
-        if (!preg_match('/^[0-9]{1,3}$/', $dk_gr) || (int) $dk_gr < 1 || (int) $dk_gr > 100) {
-            $dk_fehler[] = dk_t('FEHLER.SCHLEIFE_GRENZE');
-            $dk_beanstandet[] = 'schleife_grenze';
-        } else {
-            $dk_neu['schleife_grenze'] = (int) $dk_gr;
-        }
+    /* Entscheidung 19 (B-Nachzug 01.10.2026): ein leeres Feld behielt hier
+     * bis 1.3.11 still den alten Wert, und die Seite meldete "gespeichert".
+     * Leer, fehlend oder keine Zeichenkette ist jetzt eine Beanstandung -
+     * gespeichert wird dann nichts (Entscheidung 16), die Eingabe kommt
+     * zurueck (X-2). Still bleibt nur der Leerraum am Rand. is_string statt
+     * (string): eine Liste wurde sonst zu "Array" (PHP-Warnung). */
+    $dk_gr = (isset($_POST['schleife_grenze']) && is_string($_POST['schleife_grenze']))
+             ? trim($_POST['schleife_grenze']) : '';
+    if (!preg_match('/^[0-9]{1,3}\z/', $dk_gr) || (int) $dk_gr < 1 || (int) $dk_gr > 100) {
+        $dk_fehler[] = dk_t('FEHLER.SCHLEIFE_GRENZE');
+        $dk_beanstandet[] = 'schleife_grenze';
+    } else {
+        $dk_neu['schleife_grenze'] = (int) $dk_gr;
     }
 
-    $dk_pg = trim((string) ($_POST['platz_grenze_mb'] ?? ''));
-    if ($dk_pg !== '') {
-        if (!preg_match('/^[0-9]{1,7}$/', $dk_pg)) {
-            $dk_fehler[] = dk_t('FEHLER.PLATZ_GRENZE');
-            $dk_beanstandet[] = 'platz_grenze_mb';
-        } else {
-            $dk_neu['platz_grenze_mb'] = (int) $dk_pg;
-        }
+    /* Obergrenze 1048576 MB wie Sicherung (dk_wert_pruefen) und
+     * dk_config_normieren(). Bis 1.3.11 nahm das Formular bis 9999999 an:
+     * gespeichert wurde der Wert, gelesen aber still auf 1048576 geklemmt,
+     * und die eigene Sicherung waere beim Zurueckspielen abgewiesen worden. */
+    $dk_pg = (isset($_POST['platz_grenze_mb']) && is_string($_POST['platz_grenze_mb']))
+             ? trim($_POST['platz_grenze_mb']) : '';
+    if (!preg_match('/^[0-9]{1,7}\z/', $dk_pg) || (int) $dk_pg > 1048576) {
+        $dk_fehler[] = dk_t('FEHLER.PLATZ_GRENZE');
+        $dk_beanstandet[] = 'platz_grenze_mb';
+    } else {
+        $dk_neu['platz_grenze_mb'] = (int) $dk_pg;
     }
 
     $dk_neu['melden_aktiv']  = isset($_POST['melden_aktiv']) ? 1 : 0;
@@ -1052,6 +1061,18 @@ if ($dk_verwaist) { ?>
 	<td class="<?= $dk_c['autostart'] === 0 ? 'sm-aus' : '' ?>"><?= dk_e(dk_t('AUTOSTART.A' . (int) $dk_c['autostart'])) ?></td>
 	<td><?= dk_e($dk_c['status']) ?></td>
 	<td><?= dk_ports_html($dk_c, $dk_seitenhost) /* C11: fertig maskiert */ ?></td></tr>
+<?php } ?>
+<?php
+/* Entscheidung 19 (B-Nachzug 01.10.2026): Container der Wachliste, die es
+ * nicht gibt, stehen als eigene Zeile da (angehakt). Bis 1.3.11 fehlten sie
+ * im Formular, und jedes Speichern der Wachliste warf sie still hinaus -
+ * obwohl der Hinweis oben sagt, man solle "den Haken wegnehmen". Jetzt
+ * bleibt ein Eintrag, bis sein Haken weggenommen wird. */
+foreach ($dk_fehlende as $dk_fn) { ?>
+<tr><td><input data-role="none" type="checkbox" name="wache[]" value="<?= dk_e($dk_fn) ?>"
+	<?= ($dk_wl !== null ? in_array($dk_fn, $dk_wl, true) : true) ? 'checked' : '' ?>></td>
+	<td><span class="sm-mono"><?= dk_e($dk_fn) ?></span></td>
+	<td colspan="7" class="sm-aus"><?= dk_e(dk_t('EINST.WACHE_NICHT_DA')) ?></td></tr>
 <?php } ?>
 </table>
 </div>

@@ -3,9 +3,27 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.10 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.11 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.11
+
+Verbesserungen aus dem Durchgang (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidungen 16 und 19).
+Gemessen an einer Docker-Attrappe unter PHP 7.4 und 8.5; nicht am Gerät.
+
+* Ein leeres Feld „Neustarts je Stunde“ oder „Warnschwelle Plattenplatz“ wird
+  beanstandet; es wird nichts gespeichert, und die Eingaben stehen wieder im
+  Formular. Bisher blieb still der alte Wert stehen.
+* Die Warnschwelle nimmt 0–1048576 MB an; ein größerer Wert wurde bisher
+  gespeichert und still gekürzt.
+* Fehlt der HTTPS-Port im abgeschickten Formular, wird beanstandet statt den
+  alten Wert zu behalten. Ein Feld, das als Liste statt als Text ankommt, wird
+  beanstandet.
+* Container der Wachliste, die es nicht (mehr) gibt, stehen als eigene Zeile da
+  und bleiben, bis ihr Haken weggenommen wird. Bisher fielen sie beim Speichern
+  still heraus.
 
 ## Neu in 1.3.10
 
