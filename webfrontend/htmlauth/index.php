@@ -281,6 +281,17 @@ if (($_POST['speichern'] ?? '') === '1') {
         $dk_neu['platz_grenze_mb'] = (int) $dk_pg;
     }
 
+    /* Nr. 36 b (Stufe 2): die Ansage. Jede Beanstandung verhindert das Speichern (Nr. 16); kein
+     * Sprechtoken steht in einer Meldung, ein leeres Tokenfeld heisst "behalten". */
+    $dk_tmangel = array();
+    $dk_tbean = array();
+    $dk_tneu = ansage_formular_lesen($_POST, dk_tts($dk_cfg), $dk_tmangel, $dk_tbean,
+                                     array('modi' => dk_ansage_modi()), dk_ansage_k());
+    foreach ($dk_tmangel as $dk_tm) { $dk_fehler[] = dk_e($dk_tm['text']); }
+    foreach ($dk_tbean as $dk_tb) { $dk_beanstandet[] = $dk_tb; }
+    if (!$dk_tmangel) { $dk_neu['tts'] = $dk_tneu; }
+    foreach (dk_ansage_anlaesse() as $dk_ak) { $dk_neu[$dk_ak] = isset($_POST[$dk_ak]) ? 1 : 0; }
+
     $dk_neu['melden_aktiv']  = isset($_POST['melden_aktiv']) ? 1 : 0;
     $dk_neu['updates_aktiv'] = isset($_POST['updates_aktiv']) ? 1 : 0;
 
@@ -401,6 +412,22 @@ if (($_POST['speichern_mqtt'] ?? '') === '1') {
  * Hand starten und das Ergebnis ansehen. Genau dafuer ist dieser Knopf da -
  * er ersetzt den Gang auf die Kommandozeile.
  */
+/* ---------------- Testansage (Nr. 36 b) ----------------
+ * Ins Protokoll nur die Kurzform ohne Text und Token. */
+if (isset($_POST['ansage_test'])) {
+    $dk_ak = dk_ansage_k();
+    $dk_ar = ansage_testansage(dk_tts(dk_config()), $dk_ak);
+    dk_log('Testansage: ' . ansage_kurz($dk_ar));
+    if ($dk_ar['stand'] === 1) {
+        dk_weiter('test', array('meldung' => dk_t('DURCHSAGE.M_TEST_OK')));
+    }
+    if ($dk_ar['stand'] === -1) {
+        dk_weiter('test', array('meldung' => sprintf(dk_t('DURCHSAGE.M_TEST_NICHTS'), ansage_kennung_text($dk_ar['kennung'], $dk_ak))));
+    }
+    dk_weiter('test', array('fehler' => array(dk_e(sprintf(dk_t('DURCHSAGE.M_TEST_FEHL'),
+                                                          ansage_kennung_text($dk_ar['kennung'], $dk_ak))))));
+}
+
 if (isset($_POST['takt_jetzt'])) {
     /* Die Meldung haengt am Rueckgabewert (O3). Bis 1.3.9 stand hier immer
      * "Der Minutentakt wurde einmal von Hand ausgefuehrt" - auch wenn sich
@@ -1133,6 +1160,24 @@ foreach ($dk_fehlende as $dk_fn) { ?>
 	<?= dk_e(dk_t('EINST.L_UPDATES')) ?></label>
 	<p class="sm-hilfe"><?= dk_t('EINST.H_UPDATES') ?></p>
 </div>
+<?php /* Nr. 36 b (Stufe 2): Ansage ueber die gemeinsame Sprachausgabe, ab Werk aus. */ ?>
+<h3><?= dk_e(dk_t('DURCHSAGE.H')) ?></h3>
+<div class="sm-hinweis"><?= dk_e(dk_t('DURCHSAGE.TEXT_HILFE')) ?></div>
+<div class="sm-feld">
+	<label><?= dk_e(dk_t('DURCHSAGE.L_ANLAESSE')) ?></label>
+<?php foreach (dk_ansage_anlaesse() as $dk_ab => $dk_akk) { ?>
+	<label style="display:inline-flex;align-items:center;gap:8px;margin-right:14px;">
+		<input data-role="none" type="checkbox" name="<?= dk_e($dk_akk) ?>" value="1" <?= dk_eingabe_an('settings', $dk_akk, $dk_cfg[$dk_akk]) ? 'checked' : '' ?>>
+		<?= dk_e(dk_t('DURCHSAGE.A_' . strtoupper($dk_ab))) ?>
+	</label>
+<?php } ?>
+	<p class="sm-hilfe"><?= dk_e(dk_t('DURCHSAGE.H_ANLAESSE')) ?></p>
+</div>
+<?= ansage_formular_html(dk_tts($dk_cfg), array(
+    'w' => function ($n, $g) { return dk_eingabe('settings', $n, $g); },
+    'm' => function ($n) { return dk_markierung($n); },
+    'c' => function ($n, $g) { return dk_eingabe_an('settings', $n, $g); },
+    'modi' => dk_ansage_modi()), dk_ansage_k()) ?>
 <div class="sm-feld">
 	<label><input data-role="none" type="checkbox" name="token_neu" value="1"<?= dk_markierung('token_neu') ?>> <?= dk_e(dk_t('EINST.L_TOKENNEU')) ?></label>
 	<p class="sm-hilfe"><?= dk_t('EINST.H_TOKENNEU') ?></p>
@@ -1711,6 +1756,10 @@ if (@is_dir($dk_cronwurzel)) {
 	<td class="sm-an">&#10003; <?= dk_e($dk_crondateien[0]) ?></td>
 <?php } ?>
 </tr>
+<?php /* Nr. 36 b: die Ansage (Ausgabeart, Erreichbarkeit, letzte Ansage). */
+list($dk_ast, $dk_atext) = dk_pruefe_ansage($dk_cfg); ?>
+<tr><td><?= dk_e(dk_t('DURCHSAGE.PRUEF')) ?></td>
+	<td<?= $dk_ast === 1 ? ' class="sm-an"' : ($dk_ast === 0 ? ' class="sm-aus"' : '') ?>><?= $dk_ast === 1 ? '&#10003; ' : ($dk_ast === 0 ? '&#10007; ' : '&mdash; ') ?><?= $dk_atext ?></td></tr>
 <?php
 $dk_testtabelle = ob_get_contents();
 ob_end_flush();
@@ -1796,6 +1845,11 @@ $dk_mangel = substr_count($dk_testtabelle, 'sm-aus">&#10007;');
 	<input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
 		<input data-role="none" type="hidden" name="activetab" value="tab-test">
 		<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="takt_jetzt" value="1"><?= dk_e(dk_t('TEST.B_TAKT')) ?></button>
+	</form>
+	<form action="index.php" method="post">
+	<input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
+		<input data-role="none" type="hidden" name="activetab" value="tab-test">
+		<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= dk_e(dk_t('DURCHSAGE.K_TEST')) ?></button>
 	</form>
 	<form action="index.php" method="post">
 	<input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">

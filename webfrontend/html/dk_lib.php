@@ -50,6 +50,10 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     }
 }
 
+/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b). Liegt
+ * neben dieser Datei; die Datei schuetzt sich selbst gegen doppeltes Laden. */
+require_once __DIR__ . '/sprachausgabe.php';
+
 function dk_paths()
 {
     static $p = null;
@@ -155,6 +159,13 @@ function dk_vorgaben()
         'updates_aktiv'    => 0,
         // B2 - Warnschwelle fuer den freien Platz in MB. 0 = keine Meldung.
         'platz_grenze_mb'  => 512,
+        // Nr. 36 b (Stufe 2): Ansage ueber die gemeinsame Sprachausgabe - ab Werk keine Ausgabeart
+        // ('aus'); die Anlaesse sind an, wirken aber erst mit einer Ausgabeart.
+        'ansage_docker'    => 1,
+        'ansage_container' => 1,
+        'ansage_platz'     => 1,
+        'ansage_wieder'    => 1,
+        'tts'              => ansage_vorgaben('aus'),
     );
 }
 
@@ -301,6 +312,24 @@ function dk_wert_pruefen($k, $w)
                 if (!in_array($n, $aus, true)) { $aus[] = $n; }
             }
             return array(true, $aus, '');
+        case 'tts':
+            /* Nr. 36 b: eine Sicherung dieses Plugins traegt nie ein Sprechtoken - traegt die Datei
+             * eines, wird sie abgewiesen. Ausgabeart, Adresse (Heimnetz) und Vorlage prueft das Modul;
+             * die geltenden Sprechtoken bleiben. Der Mangeltext nennt nie einen Wert. */
+            $dk_tm = ansage_sicherung_mangel($w);
+            if ($dk_tm) { return array(false, null, sprintf(dk_t('DURCHSAGE.SICH_TOKEN'), implode(', ', $dk_tm))); }
+            $dk_tg = '';
+            $dk_tp = ansage_wert_pruefen($w, $dk_tg, dk_ansage_modi());
+            if ($dk_tp === null) {
+                return array(false, null, sprintf(dk_t('DURCHSAGE.SICH_WERT'), ansage_kennung_text($dk_tg, dk_ansage_k())));
+            }
+            $dk_tj = dk_tts(dk_config());
+            list($dk_tv) = ansage_vervollstaendigen($dk_tp + $dk_tj);
+            return array(true, ansage_sicherung_tokens_behalten($dk_tv, $dk_tj), '');
+        case 'ansage_docker':
+        case 'ansage_container':
+        case 'ansage_platz':
+        case 'ansage_wieder':
         case 'mqtt_aktiv':
         case 'melden_aktiv':
         case 'updates_aktiv':
@@ -370,6 +399,9 @@ function dk_config_normieren($cfg)
     $cfg['mqtt_aktiv']    = !empty($cfg['mqtt_aktiv']) ? 1 : 0;
     $cfg['melden_aktiv']  = !empty($cfg['melden_aktiv']) ? 1 : 0;
     $cfg['updates_aktiv'] = !empty($cfg['updates_aktiv']) ? 1 : 0;
+    // Nr. 36 b: die Anlaesse der Ansage; der Block tts wird vor Gebrauch vervollstaendigt (dk_tts()).
+    foreach (dk_ansage_anlaesse() as $dk_ak) { $cfg[$dk_ak] = !empty($cfg[$dk_ak]) ? 1 : 0; }
+    if (!is_array($cfg['tts'])) { $cfg['tts'] = ansage_vorgaben('aus'); }
 
     /* Das MQTT-Praefix landet in Themen. Der Gateway ersetzt darin nur / und %
      * durch Unterstrich - Punkte bleiben stehen. Deshalb hier ein enges
@@ -1954,6 +1986,159 @@ function dk_startzeit()
     return $sek > 0 ? (int) (time() - $sek) : 0;
 }
 
+/* ==================================================================
+ * Nr. 36 b (Stufe 2, seit 1.3.12): Ansage ueber die gemeinsame Sprachausgabe
+ * ==================================================================
+ *
+ * Ab Werk aus (Ausgabeart 'aus'). Angesagt wird, wenn der Befund WECHSELT - dieselbe Stelle im
+ * Minutentakt, an der die LoxBerry-Meldung ausgeloest wird; sie laeuft unabhaengig davon weiter. Anlaesse,
+ * je abwaehlbar: Docker nicht erreichbar (KEIN_DOCKER, ZUGRIFF_*), Container gestoert (FEHLT, AUSFALL,
+ * SCHLEIFE, UNGESUND), Speicher knapp (PLATZ) und die Entwarnung. TAKT_* wird nie angesagt: wer ansagt,
+ * ist der Takt selbst. Nie ein Wert im Takt. Hoechstens eine Ansage je Befundkennung in 30 min
+ * (Wiederholsperre); eine gesperrte Ansage wird NICHT nachgeholt. Ins Protokoll kommt nur das Ergebnis,
+ * nie der Text (Nr. 18). Der Merker steht in zustand.json (Schluessel 'ansage'), die der Takt ohnehin
+ * schreibt.
+ */
+if (!defined('DK_ANSAGE_SPERRE_S')) { define('DK_ANSAGE_SPERRE_S', 1800); }
+
+/** Erlaubte Ausgabearten: alle des Moduls ausser 'audioserver' (kein Antwortweg zu Loxone im Takt). */
+function dk_ansage_modi()
+{
+    return array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox');
+}
+
+/** Die Anlaesse: Kennung => Konfigurationsschluessel. */
+function dk_ansage_anlaesse()
+{
+    return array('docker' => 'ansage_docker', 'container' => 'ansage_container',
+                 'platz' => 'ansage_platz', 'wieder' => 'ansage_wieder');
+}
+
+/** Alle Schluessel der Ansage in der Konfiguration (Sicherungen von vor 1.3.12 tragen sie nicht). */
+function dk_ansage_schluessel()
+{
+    return array_merge(array('tts'), array_values(dk_ansage_anlaesse()));
+}
+
+/** Der Block tts, vervollstaendigt (ab Werk 'aus'). */
+function dk_tts($cfg = null)
+{
+    $cfg = is_array($cfg) ? $cfg : dk_config();
+    list($t) = ansage_vervollstaendigen(isset($cfg['tts']) && is_array($cfg['tts']) ? $cfg['tts'] : array(), 'aus');
+    return $t;
+}
+
+/** Ist eine Ausgabeart gewaehlt? */
+function dk_ansage_an($cfg = null)
+{
+    $t = dk_tts($cfg);
+    return is_string($t['mode']) && $t['mode'] !== 'aus' && in_array($t['mode'], dk_ansage_modi(), true);
+}
+
+/** Der Kontext des Moduls: Webport, Kopfzeile, Datenordner, Texte. */
+function dk_ansage_k()
+{
+    $p = dk_paths();
+    return array(
+        'port'   => ansage_webport(((string) $p['home'] !== '') ? $p['home'] . '/config/system/general.json' : ''),
+        'kopf'   => array('User-Agent: LoxBerry Docker NG'),
+        'ordner' => @is_dir($p['datadir']) ? $p['datadir'] : '',
+        't'      => function ($s) { return dk_t($s); },
+        /* Zu dieser Kennung hat das Modul (1.0.2) keinen Satz; linieneigen, bis der Modulschluessel
+         * mit Stufe 2 kommt (Entwurf, Stufe 2). */
+        'schluessel' => array('K_TTS_EINTRAG' => 'DURCHSAGE.SICH_EINTRAG'),
+    );
+}
+
+/**
+ * Welcher Anlass, welcher Satz gehoert zu einer Befundkennung? Rueckgabe array(Anlass, Satz) oder null
+ * (TAKT_*, OK, Unbekanntes: keine Ansage). Namen werden auf drei gekuerzt.
+ */
+function dk_ansage_zu($kennung)
+{
+    $k = (string) $kennung;
+    $teil = strpos($k, ':') !== false ? substr($k, strpos($k, ':') + 1) : '';
+    $namen = function ($t) {
+        $n = array_values(array_filter(explode(',', $t), 'strlen'));
+        return implode(', ', array_slice($n, 0, 3)) . (count($n) > 3 ? ' …' : '');
+    };
+    if ($k === 'KEIN_DOCKER' || strncmp($k, 'ZUGRIFF_', 8) === 0) {
+        return array('docker', dk_t('DURCHSAGE.TEXT_DOCKER'));
+    }
+    if (strncmp($k, 'FEHLT:', 6) === 0) {
+        return array('container', sprintf(dk_t('DURCHSAGE.TEXT_FEHLT'), $namen($teil)));
+    }
+    if (strncmp($k, 'UNGESUND:', 9) === 0) {
+        return array('container', sprintf(dk_t('DURCHSAGE.TEXT_UNGESUND'), $namen($teil)));
+    }
+    if (strncmp($k, 'AUSFALL:', 8) === 0) {
+        return array('container', sprintf(dk_t('DURCHSAGE.TEXT_AUSFALL'), (int) $teil));
+    }
+    if (strncmp($k, 'SCHLEIFE:', 9) === 0) {
+        return array('container', sprintf(dk_t('DURCHSAGE.TEXT_SCHLEIFE'), (int) $teil));
+    }
+    if (strncmp($k, 'PLATZ:', 6) === 0) {
+        return array('platz', sprintf(dk_t('DURCHSAGE.TEXT_PLATZ'), (int) $teil));
+    }
+    return null;
+}
+
+/**
+ * Aus dem Minutentakt, beim Wechsel des Befundes. $merker: der bisherige Merker (zustand.json, 'ansage').
+ * Rueckgabe: der neue Merker (die Sperre je Befundkennung) - nie Text oder Token.
+ */
+function dk_ansage_befund(array $befund, $vorher, $merker, $jetzt = null)
+{
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $sperre = (is_array($merker) && isset($merker['sperre']) && is_array($merker['sperre'])) ? $merker['sperre'] : array();
+    foreach ($sperre as $kk => $t) {
+        if (!is_string($kk) || ($jetzt - (int) $t) > 86400 || ($jetzt - (int) $t) < -86400) { unset($sperre[$kk]); }
+    }
+    $cfg = dk_config();
+    if (!dk_ansage_an($cfg)) {
+        /* Aus: nichts sagen, nichts merken. */
+        return array();
+    }
+    $zu = null;
+    $schl = '';
+    if ((int) $befund['schwere'] <= 4) {
+        $zu = dk_ansage_zu($befund['kennung']);
+        $schl = (string) $befund['kennung'];
+    } elseif ((string) $vorher !== '' && dk_ansage_zu($vorher) !== null) {
+        /* Entwarnung nur nach einem Befund, der selbst angesagt werden kann (nicht nach TAKT_*). */
+        $zu = array('wieder', dk_t('DURCHSAGE.TEXT_WIEDER'));
+        $schl = 'OK';
+    }
+    if ($zu === null) { return array('sperre' => $sperre); }
+    $anl = dk_ansage_anlaesse();
+    if (empty($cfg[$anl[$zu[0]]])) { return array('sperre' => $sperre); }      // abgewaehlt
+    $wer = 'Befund ' . preg_replace('/:.*/', '', $schl);
+    $zuletzt = isset($sperre[$schl]) ? (int) $sperre[$schl] : 0;
+    if ($zuletzt > 0 && ($jetzt - $zuletzt) < DK_ANSAGE_SPERRE_S && ($jetzt - $zuletzt) >= -300) {
+        dk_log('Ansage: ' . $wer . ' innerhalb von 30 min nach der letzten Ansage dieses Befundes - '
+               . 'nicht angesagt (Wiederholsperre).');
+        return array('sperre' => $sperre);
+    }
+    $sperre[$schl] = $jetzt;
+    $k = dk_ansage_k();
+    $satz = trim(html_entity_decode(strip_tags($zu[1]), ENT_QUOTES, 'UTF-8'));
+    $r = ansage_sprechen($satz, dk_tts($cfg), $k);
+    if ($r['stand'] === 1) {
+        dk_log('Ansage: ' . $wer . ' angesagt (' . ansage_kurz($r) . ').');
+    } else {
+        dk_log('Ansage: ' . $wer . ' nicht angesagt: ' . ansage_kennung_text($r['kennung'], $k)
+               . '. LoxBerry-Meldung, MQTT und Endpunkt sind davon nicht betroffen; es wird nicht wiederholt.');
+    }
+    return array('sperre' => $sperre);
+}
+
+/** Die Zeile im Reiter Test: 1 Haken, 0 Kreuz, -1 Strich (aus). Der Text ist maskiert (Modul). */
+function dk_pruefe_ansage($cfg = null)
+{
+    list($st, $text) = ansage_pruefzeile(dk_tts($cfg), true, dk_ansage_k());
+    return array($st === 1 ? 1 : ($st === -2 ? -1 : 0), $text);
+}
+
 function dk_takt()
 {
     $p = dk_paths();
@@ -2077,6 +2262,8 @@ function dk_takt()
     $neu['updates'] = empty($cfg['updates_aktiv']) ? array() : $updates;
     $neu['befund'] = isset($alt['befund']) ? (string) $alt['befund'] : '';
     $neu['mqtt'] = isset($alt['mqtt']) && is_array($alt['mqtt']) ? $alt['mqtt'] : array();
+    // Nr. 36 b: der Merker der Ansage (Sperre je Befundkennung) reist mit.
+    $neu['ansage'] = isset($alt['ansage']) && is_array($alt['ansage']) ? $alt['ansage'] : array();
 
     /* ---- Schreiben, und das Ergebnis ansehen (C7) ----
      * Bis 1.3.9 wurde der Rueckgabewert verworfen: bei einem schreibgeschuetzten
@@ -2104,6 +2291,8 @@ function dk_takt()
             dk_melden(6, dk_t('MELDUNG.WIEDER_GUT'));
             dk_log('Befund gewechselt: wieder in Ordnung.');
         }
+        /* Nr. 36 b (Stufe 2): die Ansage, ab Werk aus - unabhaengig von der Meldung oben. */
+        $neu['ansage'] = dk_ansage_befund($befund, $vorher, isset($alt['ansage']) ? $alt['ansage'] : array(), $jetzt);
         $neu['befund'] = $befund['kennung'];
     }
 
@@ -2279,6 +2468,15 @@ function dk_eingabe_felder($form)
         'wache'    => array('text' => array(), 'haken' => array('wache_alle'),
                             'liste' => array('wache'), 'nie' => array()),
     );
+    /* Nr. 36 b: Felder und Anlaesse der Ansage; die Sprechtoken stehen unter 'geheim' - markiert werden
+     * duerfen sie, mitreisen nie. */
+    $f['settings']['geheim'] = array();
+    foreach (ansage_feldnamen() as $dk_id => $dk_n) {
+        if (substr($dk_id, -9) === '_loeschen') { $f['settings']['haken'][] = $dk_n; }
+        elseif (substr($dk_id, -6) === '_token') { $f['settings']['geheim'][] = $dk_n; }
+        else { $f['settings']['text'][] = $dk_n; }
+    }
+    foreach (dk_ansage_anlaesse() as $dk_n) { $f['settings']['haken'][] = $dk_n; }
     return isset($f[$form]) ? $f[$form] : null;
 }
 
@@ -2339,7 +2537,8 @@ function dk_eingaben_setzen($roh = null)
     foreach ($f['liste'] as $k) {
         if (isset($w[$k]) && is_array($w[$k])) { $werte[$k] = array_values(array_filter($w[$k], 'is_string')); }
     }
-    $erlaubt = array_merge($f['text'], $f['haken'], $f['liste'], $f['nie']);
+    $erlaubt = array_merge($f['text'], $f['haken'], $f['liste'], $f['nie'],
+                           isset($f['geheim']) ? $f['geheim'] : array());
     $roh_b = (isset($roh['beanstandet']) && is_array($roh['beanstandet'])) ? $roh['beanstandet'] : array();
     $bean = array();
     foreach ($roh_b as $b) {
@@ -3734,6 +3933,12 @@ function dk_sicherung_lesen($roh, &$namen = null)
             continue;
         }
         list($ok, $norm, $warum) = dk_wert_pruefen($k, $w);
+        if (!$ok && $k === 'tts') {
+            /* Nr. 36 b: ohne den Wert - er kann ein Sprechtoken tragen. */
+            $mangel[] = dk_e($warum);
+            $namen[] = $k;
+            continue;
+        }
         if (!$ok) {
             $mangel[] = sprintf(dk_t('EINST.SICH_WERT'), dk_e($k), dk_e(dk_wert_zeigen($w)), $warum);
             $namen[] = $k;
@@ -3749,11 +3954,18 @@ function dk_sicherung_lesen($roh, &$namen = null)
      * (VolkswagenID 0.9.11, am 07.09.2026 ueber den Bestand ausgerollt).
      * Verglichen wird gegen die VORGABEN. */
     $fehlend = array();
+    $dk_abeh = array();
     foreach (array_keys(dk_vorgaben()) as $fk) {
         if (!array_key_exists($fk, $daten)) {
             /* Ein Schluessel, den es erst seit 1.3.9 gibt, fehlt in jeder
              * aelteren Sicherung. Er ist kein Mangel: der geltende Wert
              * bleibt, und die Meldung sagt das (C12). */
+            /* Nr. 36 b: ebenso die Ansage (tts und die Anlaesse) aus einer Sicherung von vor 1.3.12. */
+            if (in_array($fk, dk_ansage_schluessel(), true)) {
+                $neu[$fk] = dk_config()[$fk];
+                $dk_abeh[] = $fk;
+                continue;
+            }
             if ($fk === 'portainer_https_port') {
                 $neu[$fk] = (int) dk_config()[$fk];
                 $hinweis[] = sprintf(dk_t('EINST.SICH_NEU_VORGABE'), dk_e($fk));
@@ -3761,6 +3973,9 @@ function dk_sicherung_lesen($roh, &$namen = null)
             }
             $fehlend[] = $fk;
         }
+    }
+    if ($dk_abeh) {
+        $hinweis[] = sprintf(dk_t('DURCHSAGE.SICH_BEHALTEN'), dk_e(implode(', ', $dk_abeh)));
     }
     if (!$mangel && (int) $neu['portainer_port'] === (int) $neu['portainer_https_port']) {
         $mangel[] = dk_t('FEHLER.PORT_GLEICH');
@@ -3802,6 +4017,8 @@ function dk_sicherung_bauen()
     foreach (array_keys(dk_vorgaben()) as $k) {
         $aus[$k] = $cfg[$k];
     }
+    /* Nr. 36 b: die Sprechtoken der Sprachausgabe gehen nie in eine Sicherung. */
+    if (isset($aus['tts']) && is_array($aus['tts'])) { $aus['tts'] = ansage_sicherung_bereinigen($aus['tts']); }
     return $aus;
 }
 

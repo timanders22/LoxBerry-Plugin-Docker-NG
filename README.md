@@ -3,9 +3,24 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.11 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.12 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.12
+
+Ansage bei Störung über die gemeinsame Sprachausgabe (ab Werk aus).
+
+* **Wann:** Wechselt der Befund, sagt Docker NG das an – dieselbe Stelle im Minutentakt, an der die
+  LoxBerry-Meldung ausgelöst wird. Vier Anlässe, je abwählbar: Docker nicht erreichbar, Container
+  gestört (fehlt, ausgefallen, Neustartschleife, Healthcheck), Speicher knapp, wieder in Ordnung.
+  Höchstens einmal je Befund in 30 Minuten, nie Werte im Takt.
+* **Ausgabe:** Loxone Music Server, MusicServer4Home, eigene Adressvorlage, Alexa-NG oder
+  Google-Lautsprecher über Chromecast 4 Lox NG. Adresse und Vorlage müssen im Heimnetz liegen; die
+  Sprechtoken stehen in keiner Sicherung, keiner Seite und keinem Protokoll.
+* **Nebeneinander:** LoxBerry-Meldung, MQTT und Endpunkt laufen unverändert weiter. In Loxone ist
+  dafür nichts anzulegen.
+* Einstellungen im Reiter Einstellungen, Testansage und Prüfzeile im Reiter Test.
 
 ## Neu in 1.3.11
 
