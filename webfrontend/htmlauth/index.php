@@ -860,6 +860,55 @@ if (class_exists('LBWeb', false)) {
 <div class="sm-hinweis"><?= dk_t('EINST.EINGABEN') ?></div>
 <?php } ?>
 
+<?php /* Kopf (Entscheidung Nr. 43, seit 1.3.13): Statusuebersicht ueber den
+       * Reitern, immer sichtbar. Hierher gewandert aus dem Reiter
+       * Einstellungen, wo bis 1.3.12 der Abschnitt "Zustand" mit Kacheln
+       * stand. Nur Werte, die die Seite schon gelesen hat - keine eigene
+       * Abfrage. Der Gesamtbefund ist dieselbe Quelle, die auch das
+       * Benachrichtigungszentrum und der LoxBerry-Healthcheck benutzen. Drei
+       * Stellen, die dasselbe anders sagen, waeren zwei zu viel. */ ?>
+<table class="sm-tbl" style="max-width:620px">
+<tr><th><?= dk_e(dk_t('EINST.KOPF_EIGENSCHAFT')) ?></th><th><?= dk_e(dk_t('EINST.KOPF_WERT')) ?></th></tr>
+<tr><td><?= dk_e(dk_t('EINST.K_DOCKER')) ?></td>
+	<td class="<?= $dk_da !== '' ? 'sm-an' : 'sm-aus' ?>"><?= $dk_da !== '' ? dk_e(dk_t('ALLGEMEIN.JA')) : dk_e(dk_t('ALLGEMEIN.NEIN')) ?></td></tr>
+<tr><td><?= dk_e(dk_t('TEST.F_TAKT')) ?></td>
+<?php if ($dk_alter < 0) { ?>
+	<td class="sm-aus"><?= dk_e(dk_t('EINST.KOPF_TAKT_NIE')) ?></td>
+<?php } elseif ($dk_alter <= dk_takt_grenze()) { ?>
+	<td class="sm-an"><?= dk_e(sprintf(dk_t('TEST.A_TAKT_OK'), $dk_alter)) ?></td>
+<?php } else { ?>
+	<td class="sm-aus"><?= dk_e(sprintf(dk_t('TEST.A_TAKT_ALT'), (int) round($dk_alter / 60))) ?></td>
+<?php } ?></tr>
+<tr><td><?= dk_e(dk_t('EINST.K_GESAMT')) ?></td><td><?= (int) $dk_z['gesamt'] ?></td></tr>
+<tr><td><?= dk_e(dk_t('EINST.K_LAEUFT')) ?></td><td><?= (int) $dk_z['laeuft'] ?></td></tr>
+<tr><td><?= dk_e(dk_t('EINST.K_GESTOPPT')) ?></td><td><?= (int) $dk_z['gestoppt'] ?></td></tr>
+<tr><td><?= dk_e(dk_t('EINST.K_AUSFALL')) ?></td>
+	<td class="<?= $dk_z['ausfall'] ? 'sm-aus' : 'sm-an' ?>"><?= (int) $dk_z['ausfall'] ?></td></tr>
+<?php if ($dk_z['pausiert']) { ?>
+<tr><td><?= dk_e(dk_t('EINST.K_PAUSIERT')) ?></td><td class="sm-aus"><?= (int) $dk_z['pausiert'] ?></td></tr>
+<?php } ?>
+<tr><td><?= dk_e(dk_t('EINST.K_UNGESUND')) ?></td>
+	<td class="<?= $dk_z['ungesund'] ? 'sm-aus' : 'sm-an' ?>"><?= (int) $dk_z['ungesund'] ?></td></tr>
+<?php if ($dk_z['fehlt']) { ?>
+<tr><td><?= dk_e(dk_t('EINST.K_FEHLT')) ?></td><td class="sm-aus"><?= (int) $dk_z['fehlt'] ?></td></tr>
+<?php } ?>
+<?php if ($dk_z['schleife']) { ?>
+<tr><td><?= dk_e(dk_t('EINST.K_SCHLEIFE')) ?></td><td class="sm-aus"><?= (int) $dk_z['schleife'] ?></td></tr>
+<?php } ?>
+<tr><td><?= dk_e(dk_t('EINST.K_PORTAINER')) ?></td>
+	<td class="<?= $dk_pl ? 'sm-an' : 'sm-aus' ?>"><?= $dk_pl ? dk_e(dk_t('ALLGEMEIN.LAEUFT')) : dk_e(dk_t('ALLGEMEIN.GESTOPPT')) ?></td></tr>
+<?php if (isset($dk_platz['frei_mb']) && (int) $dk_platz['frei_mb'] >= 0) { ?>
+<tr><td><?= dk_e(dk_t('EINST.K_PLATZ')) ?></td>
+	<td class="<?= ((int) $dk_cfg['platz_grenze_mb'] > 0 && (int) $dk_platz['frei_mb'] < (int) $dk_cfg['platz_grenze_mb']) ? 'sm-aus' : 'sm-an' ?>"><?= (int) $dk_platz['frei_mb'] ?> MB</td></tr>
+<?php } ?>
+<tr><td><?= dk_e(dk_t('EINST.BEFUND')) ?></td>
+	<td class="<?= $dk_befund['schwere'] <= 4 ? 'sm-aus' : 'sm-an' ?>"><?= dk_e($dk_befund['text']) ?></td></tr>
+<?php if ($dk_da !== '') { ?>
+<tr><td><?= dk_e(dk_t('EINST.KOPF_FASSUNG')) ?></td><td><span class="sm-mono"><?= dk_e(dk_version()) ?></span></td></tr>
+<?php } ?>
+</table>
+<p class="sm-hilfe"><?= dk_t('EINST.K_HINWEIS') ?></p>
+
 <div class="sm-tabs">
 	<a class="sm-tab<?= $dk_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings" href="index.php?form=settings"><?= dk_e(dk_t('REITER.EINSTELLUNGEN')) ?></a>
 	<a class="sm-tab<?= $dk_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" data-ziel="tab-mqtt"     href="index.php?form=mqtt"><?= dk_e(dk_t('REITER.MQTT')) ?></a>
@@ -870,43 +919,7 @@ if (class_exists('LBWeb', false)) {
 
 <!-- ======================= Einstellungen ======================= -->
 <div class="sm-seite<?= $dk_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
-
-<h2><?= dk_e(dk_t('EINST.ZUSTAND')) ?></h2>
-<div class="sm-kacheln">
-	<div class="sm-kachel"><?= dk_e(dk_t('EINST.K_DOCKER')) ?>
-		<b class="<?= $dk_da !== '' ? 'sm-an' : 'sm-aus' ?>"><?= $dk_da !== '' ? dk_e(dk_t('ALLGEMEIN.JA')) : dk_e(dk_t('ALLGEMEIN.NEIN')) ?></b></div>
-	<div class="sm-kachel"><?= dk_e(dk_t('EINST.K_GESAMT')) ?><b><?= (int) $dk_z['gesamt'] ?></b></div>
-	<div class="sm-kachel"><?= dk_e(dk_t('EINST.K_LAEUFT')) ?><b><?= (int) $dk_z['laeuft'] ?></b></div>
-	<div class="sm-kachel"><?= dk_e(dk_t('EINST.K_GESTOPPT')) ?><b><?= (int) $dk_z['gestoppt'] ?></b></div>
-	<div class="sm-kachel"><?= dk_e(dk_t('EINST.K_AUSFALL')) ?>
-		<b class="<?= $dk_z['ausfall'] ? 'sm-aus' : 'sm-an' ?>"><?= (int) $dk_z['ausfall'] ?></b></div>
-<?php if ($dk_z['pausiert']) { ?>
-	<div class="sm-kachel"><?= dk_e(dk_t('EINST.K_PAUSIERT')) ?><b class="sm-aus"><?= (int) $dk_z['pausiert'] ?></b></div>
-<?php } ?>
-	<div class="sm-kachel"><?= dk_e(dk_t('EINST.K_UNGESUND')) ?>
-		<b class="<?= $dk_z['ungesund'] ? 'sm-aus' : 'sm-an' ?>"><?= (int) $dk_z['ungesund'] ?></b></div>
-<?php if ($dk_z['fehlt']) { ?>
-	<div class="sm-kachel"><?= dk_e(dk_t('EINST.K_FEHLT')) ?><b class="sm-aus"><?= (int) $dk_z['fehlt'] ?></b></div>
-<?php } ?>
-<?php if ($dk_z['schleife']) { ?>
-	<div class="sm-kachel"><?= dk_e(dk_t('EINST.K_SCHLEIFE')) ?><b class="sm-aus"><?= (int) $dk_z['schleife'] ?></b></div>
-<?php } ?>
-	<div class="sm-kachel"><?= dk_e(dk_t('EINST.K_PORTAINER')) ?>
-		<b class="<?= $dk_pl ? 'sm-an' : 'sm-aus' ?>"><?= $dk_pl ? dk_e(dk_t('ALLGEMEIN.LAEUFT')) : dk_e(dk_t('ALLGEMEIN.GESTOPPT')) ?></b></div>
-<?php if (isset($dk_platz['frei_mb']) && (int) $dk_platz['frei_mb'] >= 0) { ?>
-	<div class="sm-kachel"><?= dk_e(dk_t('EINST.K_PLATZ')) ?>
-		<b class="<?= ((int) $dk_cfg['platz_grenze_mb'] > 0 && (int) $dk_platz['frei_mb'] < (int) $dk_cfg['platz_grenze_mb']) ? 'sm-aus' : 'sm-an' ?>"><?= (int) $dk_platz['frei_mb'] ?> MB</b></div>
-<?php } ?>
-</div>
-<p class="sm-hilfe"><?= dk_t('EINST.K_HINWEIS') ?></p>
-<?php /* Der Gesamtbefund in einem Satz - dieselbe Quelle, die auch das
-       * Benachrichtigungszentrum und der LoxBerry-Healthcheck benutzen. Drei
-       * Stellen, die dasselbe anders sagen, waeren zwei zu viel. */ ?>
-<div class="<?= $dk_befund['schwere'] <= 4 ? 'sm-warnung' : 'sm-hinweis' ?>">
-	<b><?= dk_e(dk_t('EINST.BEFUND')) ?>:</b> <?= dk_e($dk_befund['text']) ?></div>
-<?php if ($dk_da !== '') { ?>
-<p class="sm-hilfe"><span class="sm-mono"><?= dk_e(dk_version()) ?></span></p>
-<?php } ?>
+<div class="sm-hinweis"><?= dk_t('EINST.WAS_IST_DAS') ?></div>
 
 <h2><?= dk_e(dk_t('EINST.PORTAINER')) ?></h2>
 <p class="sm-hilfe"><?= dk_t('EINST.PORTAINER_TEXT') ?></p>

@@ -3,9 +3,20 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.12 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.13 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.13
+
+Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
+
+* **Statusübersicht über den Reitern:** Docker vorhanden, Minutentakt, Container gesamt, laufen, gestoppt,
+  Störung, ungesund (pausiert, fehlen, Neustartschleife nur, wenn es sie gibt), Portainer, freier Platz,
+  Gesamtbefund und Docker-Fassung – aus den Werten, die die Seite schon liest, ohne eigene Abfrage. Sie
+  ersetzt den Abschnitt „Zustand“ mit den Kacheln, der bisher oben im Reiter Einstellungen stand.
+* **Zusammenfassung** des Plugins in einem grünen Kasten oben im Reiter Einstellungen.
+* Nur Oberfläche; gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 1.3.12
 
