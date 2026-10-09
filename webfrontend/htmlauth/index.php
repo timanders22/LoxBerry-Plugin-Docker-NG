@@ -1394,19 +1394,23 @@ foreach ($dk_fehlende as $dk_fn) { ?>
        * HTTP 503 (C5): Loxone behaelt dann ALLE Werte, auch OK=1 - ein NICHT
        * hinter OK loeste nie aus. Was dann zuverlaessig stehen bleibt, ist
        * der Herzschlag; die Aenderungsueberwachung #7 meldet deshalb "Docker
-       * oder LoxBerry schweigt", und zwar auch bei 'permission denied'. */ ?>
+       * oder LoxBerry schweigt", und zwar auch bei 'permission denied'.
+       * X-11 (1.3.14): #7 ist eine Analogwertvalidierung (V = Zaehler, En = Konstante 1,
+       * Ausgang error an #8) wie Zigbee2MqttNG 4.2.0 #2; der Schluessel heisst weiter
+       * LOX.BS_AENDER. X-10: Spalte Eingaenge in der Schreibweise von
+       * Werkzeuge/leitungen_setzen.py ("I1 = #2, I2 = #4"). */ ?>
 <tr><td>1</td><td><?= dk_e(dk_t('LOX.BS_VI')) ?></td><td>DOCKERNG_AUSFALL</td><td><?= dk_e(dk_t('LOX.BS_VI_P')) ?></td><td>&mdash;</td></tr>
 <tr><td>2</td><td><?= dk_e(dk_t('LOX.BS_SWS')) ?></td><td><?= dk_e(dk_t('LOX.BN_GESTOERT')) ?></td><td><?= dk_e(dk_t('LOX.BS_SWS_P')) ?></td><td>#1</td></tr>
 <tr><td>3</td><td><?= dk_e(dk_t('LOX.BS_VI')) ?></td><td>DOCKERNG_FEHLT</td><td><?= dk_e(dk_t('LOX.BS_VI_P')) ?></td><td>&mdash;</td></tr>
 <tr><td>4</td><td><?= dk_e(dk_t('LOX.BS_SWS')) ?></td><td><?= dk_e(dk_t('LOX.BN_FEHLT')) ?></td><td><?= dk_e(dk_t('LOX.BS_SWS_P')) ?></td><td>#3</td></tr>
-<tr><td>5</td><td><?= dk_e(dk_t('LOX.BS_ODER')) ?></td><td><?= dk_e(dk_t('LOX.BN_CONTAINER')) ?></td><td>&mdash;</td><td>#2, #4</td></tr>
+<tr><td>5</td><td><?= dk_e(dk_t('LOX.BS_ODER')) ?></td><td><?= dk_e(dk_t('LOX.BN_CONTAINER')) ?></td><td>&mdash;</td><td>I1 = #2, I2 = #4</td></tr>
 <?php /* ERGAENZT in 1.3.0: Bausteine 8 und 9. Bis 1.2.4 empfahl Schritt 5,
 	   * auf einen Wertwechsel zu achten - und es gab keinen Wert, der sich
 	   * zuverlaessig aendert. Die Empfehlung war mit den damaligen Feldern
 	   * gar nicht umsetzbar. DOCKERNG_ZAEHLER aendert sich in JEDEM Takt. */ ?>
 <tr><td>6</td><td><?= dk_e(dk_t('LOX.BS_VI')) ?></td><td>DOCKERNG_ZAEHLER</td><td><?= dk_e(dk_t('LOX.BS_VI_P')) ?></td><td>&mdash;</td></tr>
-<tr><td>7</td><td><?= dk_e(dk_t('LOX.BS_AENDER')) ?></td><td><?= dk_e(dk_t('LOX.BN_SCHWEIGT')) ?></td><td><?= dk_e(dk_t('LOX.BS_AENDER_P')) ?></td><td>#6</td></tr>
-<tr><td>8</td><td><?= dk_e(dk_t('LOX.BS_ODER')) ?></td><td><?= dk_e(dk_t('LOX.BN_SAMMEL')) ?></td><td>&mdash;</td><td>#5, #7</td></tr>
+<tr><td>7</td><td><?= dk_e(dk_t('LOX.BS_AENDER')) ?></td><td><?= dk_e(dk_t('LOX.BN_SCHWEIGT')) ?></td><td><?= dk_e(dk_t('LOX.BS_AENDER_P')) ?></td><td><?= dk_e(dk_t('LOX.BE_7')) ?></td></tr>
+<tr><td>8</td><td><?= dk_e(dk_t('LOX.BS_ODER')) ?></td><td><?= dk_e(dk_t('LOX.BN_SAMMEL')) ?></td><td>&mdash;</td><td><?= dk_e(dk_t('LOX.BE_8')) ?></td></tr>
 <tr><td>9</td><td><?= dk_e(dk_t('LOX.BS_EIN')) ?></td><td><?= dk_e(dk_t('LOX.BN_VERZOEGERN')) ?></td><td><?= dk_e(dk_t('LOX.BS_EIN_P')) ?></td><td>#8</td></tr>
 <tr><td>10</td><td><?= dk_e(dk_t('LOX.BS_BENACH')) ?></td><td><?= dk_e(dk_t('LOX.BN_MELDUNG')) ?></td><td><?= dk_e(dk_t('LOX.BS_BENACH_P')) ?></td><td>#9</td></tr>
 </table>

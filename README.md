@@ -3,9 +3,27 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.13 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.14 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.14
+
+Baustein-Liste in der Schreibweise des Leitungswerkzeugs, Ausfallerkennung mit dem richtigen Baustein,
+gemeinsame Sprachausgabe 1.1.2.
+
+* **Ausfallerkennung (#7): Analogwertvalidierung statt „Änderungsüberwachung“.** Parameter Tmc 300 s,
+  Min 0, Max 999; `DOCKERNG_ZAEHLER` an V, an En eine Konstante 1; der Ausgang error geht an das ODER #8.
+  Der Reiter Einbindung in Loxone erklärt die Anschlüsse. Wer #7 schon gebaut hat, tauscht den Baustein
+  aus.
+* **Baustein-Liste (Reiter Einbindung in Loxone):** Die Spalte „Eingänge verbinden mit“ nennt die
+  Anschlüsse in fester Form: `I1 = #2, I2 = #4`, `V = #6, En = Konstante 1`,
+  `I1 = #5, I2 = Ausgang error von #7`. Sonst gleiche Bausteine, gleiche Verbindungen.
+* **Sprachausgabe 1.1.2:** gemeinsames Modul und Abschnitt [ANSAGE] mit 157 Sätzen. Den Satz zu einem
+  unbekannten Eintrag im Block der Sprachausgabe bringt jetzt das Modul mit; die eigene Umlenkung ist
+  gestrichen (gleicher Wortlaut). Dazu aus dem Modul: Zeichenzahl bei kaputtem UTF-8 in Zeichen, die
+  Meldung „Port abgewiesen“ nennt das Feld nicht mehr doppelt.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät und nicht in Loxone Config angesehen.
 
 ## Neu in 1.3.13
 
