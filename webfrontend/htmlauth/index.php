@@ -835,6 +835,10 @@ if (class_exists('LBWeb', false)) {
 .sm-setup { font-size: 1.05em; font-weight: 700; letter-spacing: 0.03em; user-select: all; }
 /* X-2: das beanstandete Feld nach der Umleitung (eigene Zutat, nicht aus der Vorlage). */
 .sm-beanstandet { outline: 2px solid #b00000 !important; outline-offset: 1px; }
+/* Ergaenzung (Welle Bild, Entscheidung 45): Bild der Bausteine aus dem gemeinsamen Musterprojekt. */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 </style>
 
 <div class="sm-wrap">
@@ -1413,11 +1417,21 @@ foreach ($dk_fehlende as $dk_fn) { ?>
 <tr><td>8</td><td><?= dk_e(dk_t('LOX.BS_ODER')) ?></td><td><?= dk_e(dk_t('LOX.BN_SAMMEL')) ?></td><td>&mdash;</td><td><?= dk_e(dk_t('LOX.BE_8')) ?></td></tr>
 <tr><td>9</td><td><?= dk_e(dk_t('LOX.BS_EIN')) ?></td><td><?= dk_e(dk_t('LOX.BN_VERZOEGERN')) ?></td><td><?= dk_e(dk_t('LOX.BS_EIN_P')) ?></td><td>#8</td></tr>
 <tr><td>10</td><td><?= dk_e(dk_t('LOX.BS_BENACH')) ?></td><td><?= dk_e(dk_t('LOX.BN_MELDUNG')) ?></td><td><?= dk_e(dk_t('LOX.BS_BENACH_P')) ?></td><td>#9</td></tr>
+<?php /* Welle Bild 3 (1.3.15, Entscheidung A): die Konstante 1 an En von #7 steht als
+       * eigene Zeile #11 - so fuehrt sie das Musterprojekt in Loxone Config, und
+       * Werkzeuge/leitungen_setzen.py zieht damit auch die Leitung an En (LOX.BE_7). */ ?>
+<tr><td>11</td><td><?= dk_e(dk_t('LOX.BS_KONST')) ?></td><td><?= dk_e(dk_t('LOX.BN_KONSTANTE')) ?></td><td><?= dk_e(dk_t('LOX.BS_KONST_P')) ?></td><td>&mdash;</td></tr>
 </table>
 <p class="sm-hilfe"><?= dk_t('LOX.S4_ZU7') ?></p>
+<p class="sm-hilfe"><?= dk_t('LOX.S4_ZU11') ?></p>
 <p class="sm-hilfe"><?= dk_t('LOX.S4_ZU3') ?></p>
 <p class="sm-hilfe"><?= dk_t('LOX.S4_ZU4') ?></p>
 <p class="sm-hilfe"><?= dk_t('LOX.S4_EINZELN') ?></p>
+<figure class="sm-bild">
+<img src="einbindung_loxone.png" alt="<?= dk_e(dk_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= dk_e(dk_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+</figure>
+<p class="sm-hilfe"><?= dk_t('LOX.MUSTERPROJEKT') ?></p>
 </div>
 
 <div class="sm-step"><b><?= dk_e(dk_t('LOX.S5')) ?></b><br>

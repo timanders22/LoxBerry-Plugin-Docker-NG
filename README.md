@@ -3,9 +3,24 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.14 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.15 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.15
+
+Reiter „Einbindung in Loxone“ zeigt ein Bild der Bausteine aus dem gemeinsamen Musterprojekt und
+verlinkt die Projektdatei; die Konstante an der Ausfallerkennung steht als eigene Zeile in der
+Baustein-Liste.
+
+* Unter der Baustein-Liste steht das Bild der Seite „Docker NG“ aus dem
+  [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt); das Bild liegt im Plugin,
+  nachgeladen wird nichts. Config kürzt lange Bausteinnamen, die vollen Namen stehen in der Tabelle.
+* **Baustein-Liste:** neu #11 „Konstante 1“ (Konstante, Wert 1). #7 nennt sie jetzt als
+  `V = #6, En = #11` statt „En = Konstante 1“ – die Analogwertvalidierung prüft nur mit
+  Konstante 1 an En. Gleiche Bausteine wie bisher, die Konstante war schon nötig; nur steht sie
+  jetzt in der Liste.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 1.3.14
 
@@ -1004,6 +1019,10 @@ Merkwort antwortet der Endpunkt mit 403** — auch lesend. Unbekannte Aktionen
 und Containernamen, die nicht ins Muster passen, werden **abgewiesen und
 benannt**, nicht stillschweigend zurechtgebogen: ein still gekürzter Name fände
 den Container nicht und meldete „läuft nicht" — eine stille Falschaussage.
+
+Die Bausteine der Baustein-Liste aus dem Reiter *Einbindung in Loxone* stehen fertig verbunden
+auf der Seite „Docker NG“ im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
+einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
 ## MQTT
 
