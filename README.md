@@ -3,9 +3,36 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.15 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.16 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.16
+
+Vollausstattung aus dem [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt) mit einem Bild und
+Schritt-für-Schritt-Anleitung.
+
+* **Reiter Einbindung in Loxone, Schritt 4:** Baustein-Liste mit 37 statt 11 Zeilen – alle Werte der
+  Importdatei außer `DOCKERNG_OK` auf der Seite, drei neue Meldungen („Docker Container krank“,
+  „Docker Speicher knapp“ unter 512 MB, „Docker Container portainer steht“ als Beispiel für einen einzeln
+  überwachten Container) und drei Status-Bausteine („Docker Container“, „Docker LoxBerry“, „Container
+  portainer“). Dazu ein Kasten „So übernehmen Sie diese Seite“, Hinweise und das neue Bild der Seite
+  „Docker NG“. Die bisherigen elf Zeilen bleiben mit Nummern, Namen und Leitungen. Steht portainer nicht
+  auf der Wachliste, nennen die Beispielzeilen den ersten Container der Wachliste.
+* **Importdatei:** `DOCKERNG_PLATZFREI` lässt jetzt bis 99999999 MB zu (bisher 999999 – ab knapp 1 TB
+  freiem Platz kam in Loxone 0 an, und „Docker Speicher knapp“ meldete fälschlich). Wer schon importiert
+  hat, hebt in Loxone Config am Befehl `DOCKERNG_PLATZFREI` den Höchstwert (Max) von Hand auf 99999999
+  an – nicht neu importieren, zweimal importiert heißt doppelte Bausteine. Die Befehle
+  `DOCKERNG_C_<Name>`/`DOCKERNG_H_<Name>` je Container der Wachliste standen schon darin; wer den
+  Beispielcontainer nachrüstet, legt einen fehlenden Befehl von Hand am Eingang „Docker NG“ an.
+* **Textberichtigungen:** Ein einzeln überwachter Container bekommt eine eigene Meldung, statt über ein
+  weiteres ODER zwischen #8 und #9 eingeschleift zu werden; der Hinweis zu #5/#8 sagt jetzt, dass ein ODER
+  das Verschlucken weiterer Meldungen nicht verhindert. Die Eingänge #1, #3 und #6 heißen „aus der
+  Vorlage“ statt „aus Schritt 1 bzw. 3“, #7 steht ohne den Zusatz „(Projektdatei: …)“, die
+  Eingangszellen in der Form „Eingang = #8“. Ein Code-Kommentar im Endpunkt nennt die
+  Analogwertvalidierung statt der Änderungsüberwachung.
+* Bausteinnamen stehen auch auf der englischen Seite deutsch, wie im Musterprojekt.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät und nicht in Loxone Config angesehen.
 
 ## Neu in 1.3.15
 
@@ -1020,7 +1047,8 @@ und Containernamen, die nicht ins Muster passen, werden **abgewiesen und
 benannt**, nicht stillschweigend zurechtgebogen: ein still gekürzter Name fände
 den Container nicht und meldete „läuft nicht" — eine stille Falschaussage.
 
-Die Bausteine der Baustein-Liste aus dem Reiter *Einbindung in Loxone* stehen fertig verbunden
+Die Bausteine der Baustein-Liste aus dem Reiter *Einbindung in Loxone* (37 Zeilen: alle Werte,
+vier Meldungen, drei Status-Bausteine, ein einzeln überwachter Container) stehen fertig verbunden
 auf der Seite „Docker NG“ im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
 einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 

@@ -3690,6 +3690,12 @@ function dk_lox_felder()
      * '<v>'. ZAEHLER, SCHLEIFE und PLATZFREI koennen -1 senden (Takt steht,
      * C4) - MinVal traegt das, sonst wuerde -1 zur 0 (Regeln/07). TAKTALTER
      * ist neu und steht hinten.
+     *
+     * SEIT 1.3.16 (Entwurf Welle 13 dk, Entscheidung 7): PLATZFREI MaxVal
+     * 99999999 statt 999999. MaxVal ist in Loxone eine Validierungsgrenze -
+     * ein Wert darueber wird zu 0 (Regeln/07); ab knapp 1 TB freiem Platz
+     * (LoxBerry auf SSD/USB-Platte) kam 0 an, und "Speicher knapp" meldete
+     * faelschlich. Reine Vorlagengrenze wie TAKTALTER, kein Verhalten.
      */
     return array(
         array('OK',        dk_t('LOX.F_OK'),        0, 1,   1, '<v>'),
@@ -3705,7 +3711,7 @@ function dk_lox_felder()
         // Der Herzschlag. Er MUSS sich bei jedem Takt aendern - daran und nur
         // daran erkennt Loxone, dass der LoxBerry noch antwortet.
         array('ZAEHLER',   dk_t('LOX.F_ZAEHLER'),   -1, 999, 42, '<v>'),
-        array('PLATZFREI', dk_t('LOX.F_PLATZFREI'), -1, 999999, 4096, '<v> MB'),
+        array('PLATZFREI', dk_t('LOX.F_PLATZFREI'), -1, 99999999, 4096, '<v> MB'),
         array('TAKTALTER', dk_t('LOX.F_TAKTALTER'), -1, 99999999, 12, '<v> s'),
     );
 }

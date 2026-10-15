@@ -839,6 +839,11 @@ if (class_exists('LBWeb', false)) {
 .sm-bild { margin: 12px 0; }
 .sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
 .sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+/* Welle Bild 13 (1.3.16): Abschnitt, Schritte und Hinweise der Baustein-Liste (wie APC-UPS NG 1.2.20). */
+.sm-wrap h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
 </style>
 
 <div class="sm-wrap">
@@ -1384,49 +1389,119 @@ foreach ($dk_fehlende as $dk_fn) { ?>
 
 <div class="sm-step"><b><?= dk_e(dk_t('LOX.S4')) ?></b><br>
 <?= dk_t('LOX.S4_TEXT') ?>
+<?php
+/* Welle Bild 13 (1.3.16, Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das Maximum leicht
+ * uebernehmen koennen; Entwurf Welle 13 dk, Entscheidungen 1-12 wie empfohlen): die Seite "Docker NG" aus
+ * dem LoxBerry-Plugins Musterprojekt, dort in Loxone Config gebaut und mit leitungen_setzen.py verbunden
+ * (Musterprojekt/baustein_listen.txt, Abschnitt "Docker NG", 37 Zeilen, wortgleich). Ueberschrift, Kasten
+ * "So uebernehmen Sie diese Seite", Tabelle, Hinweise, Bild, Link - immer sichtbar.
+ * Bis 1.3.15 stand hier eine Liste mit 11 Zeilen; sie ist #1 bis #11 geblieben (Nummern, Namen,
+ * Leitungen). Geschichte dieser Zeilen: 1.2.4 AUSFALL statt GESTOPPT an #1 (GESTOPPT zaehlt planmaessig
+ * beendete Container mit, die Sammelstoerung stand dauerhaft an); 1.3.9 neu geordnet, Ausfallerkennung
+ * ueber den Herzschlag ZAEHLER (bei Docker-Ausfall HTTP 503, Loxone behaelt OK=1); 1.3.14 #7 ist eine
+ * Analogwertvalidierung (V = Zaehler, En = Konstante 1, Ausgang error an #8), nicht die frueher hier
+ * genannte Aenderungsueberwachung; 1.3.15 Konstante als eigene Zeile #11.
+ * Beispielcontainer der Zeilen 30-34 und 37 (E9): portainer - den legt das Plugin selbst an, und so steht
+ * er im Musterprojekt. Fuehrt die Wachliste portainer nicht, der erste Container der Wachliste; dessen
+ * Befehle DOCKERNG_C_/_H_ stehen dann in der Importdatei (dk_xml_virtual_in_http()).
+ * Texte aus [LOX]; Zellen und Schritte maskiert (erst vsprintf, dann dk_e), Hinweise roh wie S4_ZU7.
+ * Zeile: array(Nr, Typ, Name, Parameter, Eingaenge). */
+$dk_bs_c = 'portainer';
+$dk_bs_w = is_array($dk_cfg['wachliste']) ? array_values($dk_cfg['wachliste']) : array();
+if ($dk_bs_w && !in_array('portainer', $dk_bs_w, true)) { $dk_bs_c = (string) $dk_bs_w[0]; }
+$dk_bs_cs = preg_replace('/[^A-Za-z0-9_]/', '_', $dk_bs_c);
+$dk_bs_arg = array('Z30_PARAM' => 1, 'Z31_PARAM' => 1, 'Z32_NAME' => 1, 'Z33_NAME' => 1, 'Z34_NAME' => 1, 'Z34_PARAM' => 1, 'Z37_NAME' => 1, 'Z37_PARAM' => 1);
+$dk_bs_t = function ($s, $a = array()) {
+    $t = (string) dk_t('LOX.' . $s);
+    return dk_e($a ? vsprintf($t, $a) : $t);
+};
+$dk_bs_k = function ($s) use ($dk_bs_t, $dk_bs_c, $dk_bs_arg) {
+    return $dk_bs_t($s, isset($dk_bs_arg[$s]) ? array($dk_bs_c) : array());
+};
+$dk_bs_strich = '&mdash;';
+$dk_bs_ein = function ($nr) use ($dk_bs_t) { return $dk_bs_t('E_EIN', array($nr)); };
+$dk_bs_aus = function ($pin, $nr) use ($dk_bs_t) { return $dk_bs_t('E_AUSGANG', array($pin, $nr)); };
+/* Eingang der Importdatei: Typ (mit Vorlagentitel "Docker NG", fest wie in dk_xml_virtual_in_http()),
+ * Name = Befehlstitel (fest). */
+$dk_bs_vi_z = function ($nr, $typ, $name, $param, $verb) use ($dk_bs_t, $dk_bs_k) {
+    return array($nr, $typ === 'BT_VIV' ? $dk_bs_t('BT_VIV', array('Docker NG')) : $dk_bs_t('BT_VI'),
+                 dk_e($name), $dk_bs_k($param), $verb);
+};
+/* Uebriger Baustein: Typ-Schluessel, Name Z<nn>_NAME, Parameter Z<nn>_PARAM. */
+$dk_bs_zl = function ($nr, $typ, $s, $param, $verb) use ($dk_bs_t, $dk_bs_k, $dk_bs_strich) {
+    return array($nr, $dk_bs_t($typ), $dk_bs_k($s . '_NAME'), $param === '' ? $dk_bs_strich : $dk_bs_k($param),
+                 $verb);
+};
+$dk_bs_zeilen = array(
+    $dk_bs_vi_z(1, 'BT_VI', 'DOCKERNG_AUSFALL', 'Z01_PARAM', $dk_bs_strich),
+    $dk_bs_zl(2, 'BT_SCHWELL', 'Z02', 'Z02_PARAM', 'V = #1'),
+    $dk_bs_vi_z(3, 'BT_VI', 'DOCKERNG_FEHLT', 'Z03_PARAM', $dk_bs_strich),
+    $dk_bs_zl(4, 'BT_SCHWELL', 'Z04', 'Z04_PARAM', 'V = #3'),
+    $dk_bs_zl(5, 'BT_ODER', 'Z05', '', 'I1 = #2, I2 = #4'),
+    $dk_bs_vi_z(6, 'BT_VI', 'DOCKERNG_ZAEHLER', 'Z06_PARAM', $dk_bs_strich),
+    $dk_bs_zl(7, 'BT_VALID', 'Z07', 'Z07_PARAM', 'V = #6, En = #11'),
+    $dk_bs_zl(8, 'BT_ODER', 'Z08', '', 'I1 = #5, I2 = ' . $dk_bs_aus('error', 7)),
+    $dk_bs_zl(9, 'BT_EVZ', 'Z09', 'Z09_PARAM', $dk_bs_ein(8)),
+    $dk_bs_zl(10, 'BT_BENACHR', 'Z10', 'Z10_PARAM', $dk_bs_ein(9)),
+    $dk_bs_zl(11, 'BT_KONSTANTE', 'Z11', 'Z11_PARAM', $dk_bs_strich),
+    $dk_bs_vi_z(12, 'BT_VIV', 'DOCKERNG_GESAMT', 'Z12_PARAM', $dk_bs_strich),
+    $dk_bs_vi_z(13, 'BT_VIV', 'DOCKERNG_LAEUFT', 'Z13_PARAM', $dk_bs_strich),
+    $dk_bs_vi_z(14, 'BT_VIV', 'DOCKERNG_GESTOPPT', 'Z14_PARAM', $dk_bs_strich),
+    $dk_bs_vi_z(15, 'BT_VIV', 'DOCKERNG_PAUSIERT', 'Z15_PARAM', $dk_bs_strich),
+    $dk_bs_vi_z(16, 'BT_VIV', 'DOCKERNG_UNGESUND', 'Z16_PARAM', $dk_bs_strich),
+    $dk_bs_vi_z(17, 'BT_VIV', 'DOCKERNG_SCHLEIFE', 'Z17_PARAM', $dk_bs_strich),
+    $dk_bs_vi_z(18, 'BT_VIV', 'DOCKERNG_PORTAINER', 'Z18_PARAM', $dk_bs_strich),
+    $dk_bs_vi_z(19, 'BT_VIV', 'DOCKERNG_PLATZFREI', 'Z19_PARAM', $dk_bs_strich),
+    $dk_bs_vi_z(20, 'BT_VIV', 'DOCKERNG_TAKTALTER', 'Z20_PARAM', $dk_bs_strich),
+    $dk_bs_zl(21, 'BT_SCHWELL', 'Z21', 'Z21_PARAM', 'V = #16'),
+    $dk_bs_zl(22, 'BT_SCHWELL', 'Z22', 'Z22_PARAM', 'V = #17'),
+    $dk_bs_zl(23, 'BT_ODER', 'Z23', '', 'I1 = #21, I2 = #22'),
+    $dk_bs_zl(24, 'BT_EVZ', 'Z24', 'Z24_PARAM', $dk_bs_ein(23)),
+    $dk_bs_zl(25, 'BT_BENACHR', 'Z25', 'Z25_PARAM', $dk_bs_ein(24)),
+    $dk_bs_zl(26, 'BT_FORMEL', 'Z26', 'Z26_PARAM', 'I1 = #19'),
+    $dk_bs_zl(27, 'BT_SCHWELL', 'Z27', 'Z27_PARAM', 'V = #26'),
+    $dk_bs_zl(28, 'BT_EVZ', 'Z28', 'Z28_PARAM', $dk_bs_ein(27)),
+    $dk_bs_zl(29, 'BT_BENACHR', 'Z29', 'Z29_PARAM', $dk_bs_ein(28)),
+    $dk_bs_vi_z(30, 'BT_VIV', 'DOCKERNG_C_' . $dk_bs_cs, 'Z30_PARAM', $dk_bs_strich),
+    $dk_bs_vi_z(31, 'BT_VIV', 'DOCKERNG_H_' . $dk_bs_cs, 'Z31_PARAM', $dk_bs_strich),
+    $dk_bs_zl(32, 'BT_SCHWELL', 'Z32', 'Z32_PARAM', 'V = #30'),
+    $dk_bs_zl(33, 'BT_EVZ', 'Z33', 'Z33_PARAM', $dk_bs_ein(32)),
+    $dk_bs_zl(34, 'BT_BENACHR', 'Z34', 'Z34_PARAM', $dk_bs_ein(33)),
+    $dk_bs_zl(35, 'BT_STATUS', 'Z35', 'Z35_PARAM', 'V1 = #13, V2 = #12, V3 = #14, V4 = #15, V5 = #1, V6 = #3, V7 = #16, V8 = #17'),
+    $dk_bs_zl(36, 'BT_STATUS', 'Z36', 'Z36_PARAM', 'V1 = #19, V2 = #20, V3 = #6, V4 = ' . $dk_bs_aus('E', 7) . ', V5 = #18'),
+    $dk_bs_zl(37, 'BT_STATUS', 'Z37', 'Z37_PARAM', 'V1 = #30, V2 = #31'),
+);
+$dk_bs_schritte = array(
+    array('SCHRITT1', array(dk_t('REITER.EINSTELLUNGEN'), dk_t('EINST.B_WACHE'), dk_t('REITER.TEST'), dk_t('TEST.B_STATUS'))),
+    array('SCHRITT2', array(dk_t('LOX.B_XML'), $dk_bs_c)),
+    array('SCHRITT3', array('Docker NG', 'DOCKERNG_C_' . $dk_bs_cs, 'DOCKERNG_H_' . $dk_bs_cs)),
+    array('SCHRITT4', array(vsprintf(dk_t('LOX.Z34_NAME'), array($dk_bs_c)))),
+    array('SCHRITT5', array(dk_t('LOX.B_EIN'), dk_t('LOX.B_PARAM'))),
+    array('SCHRITT6', array()),
+);
+$dk_bs_hinweise = array('S4_ZU7', 'S4_ZU11', 'S4_ZU3', 'S4_ZU4', 'H_ZU26', 'S4_EINZELN', 'H_OK', 'H_PLATZ_MAX', 'H_DOPPELT', 'H_GRENZEN');
+?>
+<h4 class="sm-h4"><?= dk_e(dk_t('LOX.ABSCHNITT_H')) ?></h4>
+<div class="sm-hinweis"><b><?= dk_e(dk_t('LOX.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach ($dk_bs_schritte as $dk_bs_x) { ?>
+<li><?= $dk_bs_t($dk_bs_x[0], $dk_bs_x[1]) ?></li>
+<?php } ?>
+</ol></div>
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr><th>#</th><th><?= dk_e(dk_t('LOX.B_TYP')) ?></th><th><?= dk_e(dk_t('LOX.B_NAME')) ?></th><th><?= dk_e(dk_t('LOX.B_PARAM')) ?></th><th><?= dk_e(dk_t('LOX.B_EIN')) ?></th></tr>
-<?php /* BERICHTIGT in 1.2.4: hier stand DOCKERNG_GESTOPPT. Dieser Wert zaehlt
-	   * jeden je erzeugten und nicht entfernten Container mit, auch den
-	   * planmaessig beendeten Sicherungscontainer - die Sammelstörung stand
-	   * damit vom ersten Tag an dauerhaft an und verschluckte ueber #4 alle
-	   * uebrigen Meldungen. AUSFALL laesst 'Exited (0)' und 'Created' aus. */ ?>
-<?php /* NEU GEORDNET in 1.3.9 (O6). Bis dahin hingen #7 (NICHT hinter
-       * DOCKERNG_OK) und #9 (Aenderungsueberwachung) an nichts, das ODER #4
-       * hatte mehr als zwei Eingaenge, und die Kette meldete nur AUSFALL.
-       * Seit 1.3.9 antwortet der Endpunkt bei nicht erreichbarem Docker mit
-       * HTTP 503 (C5): Loxone behaelt dann ALLE Werte, auch OK=1 - ein NICHT
-       * hinter OK loeste nie aus. Was dann zuverlaessig stehen bleibt, ist
-       * der Herzschlag; die Aenderungsueberwachung #7 meldet deshalb "Docker
-       * oder LoxBerry schweigt", und zwar auch bei 'permission denied'.
-       * X-11 (1.3.14): #7 ist eine Analogwertvalidierung (V = Zaehler, En = Konstante 1,
-       * Ausgang error an #8) wie Zigbee2MqttNG 4.2.0 #2; der Schluessel heisst weiter
-       * LOX.BS_AENDER. X-10: Spalte Eingaenge in der Schreibweise von
-       * Werkzeuge/leitungen_setzen.py ("I1 = #2, I2 = #4"). */ ?>
-<tr><td>1</td><td><?= dk_e(dk_t('LOX.BS_VI')) ?></td><td>DOCKERNG_AUSFALL</td><td><?= dk_e(dk_t('LOX.BS_VI_P')) ?></td><td>&mdash;</td></tr>
-<tr><td>2</td><td><?= dk_e(dk_t('LOX.BS_SWS')) ?></td><td><?= dk_e(dk_t('LOX.BN_GESTOERT')) ?></td><td><?= dk_e(dk_t('LOX.BS_SWS_P')) ?></td><td>#1</td></tr>
-<tr><td>3</td><td><?= dk_e(dk_t('LOX.BS_VI')) ?></td><td>DOCKERNG_FEHLT</td><td><?= dk_e(dk_t('LOX.BS_VI_P')) ?></td><td>&mdash;</td></tr>
-<tr><td>4</td><td><?= dk_e(dk_t('LOX.BS_SWS')) ?></td><td><?= dk_e(dk_t('LOX.BN_FEHLT')) ?></td><td><?= dk_e(dk_t('LOX.BS_SWS_P')) ?></td><td>#3</td></tr>
-<tr><td>5</td><td><?= dk_e(dk_t('LOX.BS_ODER')) ?></td><td><?= dk_e(dk_t('LOX.BN_CONTAINER')) ?></td><td>&mdash;</td><td>I1 = #2, I2 = #4</td></tr>
-<?php /* ERGAENZT in 1.3.0: Bausteine 8 und 9. Bis 1.2.4 empfahl Schritt 5,
-	   * auf einen Wertwechsel zu achten - und es gab keinen Wert, der sich
-	   * zuverlaessig aendert. Die Empfehlung war mit den damaligen Feldern
-	   * gar nicht umsetzbar. DOCKERNG_ZAEHLER aendert sich in JEDEM Takt. */ ?>
-<tr><td>6</td><td><?= dk_e(dk_t('LOX.BS_VI')) ?></td><td>DOCKERNG_ZAEHLER</td><td><?= dk_e(dk_t('LOX.BS_VI_P')) ?></td><td>&mdash;</td></tr>
-<tr><td>7</td><td><?= dk_e(dk_t('LOX.BS_AENDER')) ?></td><td><?= dk_e(dk_t('LOX.BN_SCHWEIGT')) ?></td><td><?= dk_e(dk_t('LOX.BS_AENDER_P')) ?></td><td><?= dk_e(dk_t('LOX.BE_7')) ?></td></tr>
-<tr><td>8</td><td><?= dk_e(dk_t('LOX.BS_ODER')) ?></td><td><?= dk_e(dk_t('LOX.BN_SAMMEL')) ?></td><td>&mdash;</td><td><?= dk_e(dk_t('LOX.BE_8')) ?></td></tr>
-<tr><td>9</td><td><?= dk_e(dk_t('LOX.BS_EIN')) ?></td><td><?= dk_e(dk_t('LOX.BN_VERZOEGERN')) ?></td><td><?= dk_e(dk_t('LOX.BS_EIN_P')) ?></td><td>#8</td></tr>
-<tr><td>10</td><td><?= dk_e(dk_t('LOX.BS_BENACH')) ?></td><td><?= dk_e(dk_t('LOX.BN_MELDUNG')) ?></td><td><?= dk_e(dk_t('LOX.BS_BENACH_P')) ?></td><td>#9</td></tr>
-<?php /* Welle Bild 3 (1.3.15, Entscheidung A): die Konstante 1 an En von #7 steht als
-       * eigene Zeile #11 - so fuehrt sie das Musterprojekt in Loxone Config, und
-       * Werkzeuge/leitungen_setzen.py zieht damit auch die Leitung an En (LOX.BE_7). */ ?>
-<tr><td>11</td><td><?= dk_e(dk_t('LOX.BS_KONST')) ?></td><td><?= dk_e(dk_t('LOX.BN_KONSTANTE')) ?></td><td><?= dk_e(dk_t('LOX.BS_KONST_P')) ?></td><td>&mdash;</td></tr>
+<?php foreach ($dk_bs_zeilen as $dk_bs_z) { ?>
+<tr><td><?= (int) $dk_bs_z[0] ?></td><td><?= $dk_bs_z[1] ?></td><td><?= $dk_bs_z[2] ?></td><td><?= $dk_bs_z[3] ?></td><td><?= $dk_bs_z[4] ?></td></tr>
+<?php } ?>
 </table>
-<p class="sm-hilfe"><?= dk_t('LOX.S4_ZU7') ?></p>
-<p class="sm-hilfe"><?= dk_t('LOX.S4_ZU11') ?></p>
-<p class="sm-hilfe"><?= dk_t('LOX.S4_ZU3') ?></p>
-<p class="sm-hilfe"><?= dk_t('LOX.S4_ZU4') ?></p>
-<p class="sm-hilfe"><?= dk_t('LOX.S4_EINZELN') ?></p>
+</div>
+<div class="sm-warnung"><b><?= dk_e(dk_t('LOX.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach ($dk_bs_hinweise as $dk_bs_x) { ?>
+<li><?= dk_t('LOX.' . $dk_bs_x) ?></li>
+<?php } ?>
+</ul></div>
 <figure class="sm-bild">
 <img src="einbindung_loxone.png" alt="<?= dk_e(dk_t('LOX.BILD_ALT')) ?>" loading="lazy">
 <figcaption><?= dk_e(dk_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>

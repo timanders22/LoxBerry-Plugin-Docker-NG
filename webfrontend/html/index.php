@@ -110,7 +110,7 @@ $dk_da = $dk_ok ? 1 : 0;
  * Entscheidung 9 vom 30.09.2026 und Regeln/07: faellt die Quelle aus,
  * antwortet der Endpunkt mit 503 und ohne Daten. Loxone behaelt dann die
  * letzten Werte, und der Herzschlag ZAEHLER aendert sich nicht mehr - genau
- * darauf schaut die Aenderungsueberwachung der Baustein-Liste.
+ * darauf schaut die Analogwertvalidierung der Baustein-Liste (#7).
  *
  * Bis 1.3.9 kam hier HTTP 200 mit GESAMT=0, FEHLT=<Wachliste> und
  * C_<name>=-1 fuer jeden ueberwachten Container - dieselbe Aussage wie fuer
