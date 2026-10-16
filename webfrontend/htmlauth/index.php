@@ -1400,7 +1400,8 @@ foreach ($dk_fehlende as $dk_fn) { ?>
  * beendete Container mit, die Sammelstoerung stand dauerhaft an); 1.3.9 neu geordnet, Ausfallerkennung
  * ueber den Herzschlag ZAEHLER (bei Docker-Ausfall HTTP 503, Loxone behaelt OK=1); 1.3.14 #7 ist eine
  * Analogwertvalidierung (V = Zaehler, En = Konstante 1, Ausgang error an #8), nicht die frueher hier
- * genannte Aenderungsueberwachung; 1.3.15 Konstante als eigene Zeile #11.
+ * genannte Aenderungsueberwachung; 1.3.15 Konstante als eigene Zeile #11; 1.3.17 Texte nach der Liste
+ * vom 16.10.2026: #1/#3/#6 Typ mit Vorlagentitel und Bedeutung statt "aus der Vorlage", #10 Meldetext.
  * Beispielcontainer der Zeilen 30-34 und 37 (E9): portainer - den legt das Plugin selbst an, und so steht
  * er im Musterprojekt. Fuehrt die Wachliste portainer nicht, der erste Container der Wachliste; dessen
  * Befehle DOCKERNG_C_/_H_ stehen dann in der Importdatei (dk_xml_virtual_in_http()).
@@ -1433,12 +1434,12 @@ $dk_bs_zl = function ($nr, $typ, $s, $param, $verb) use ($dk_bs_t, $dk_bs_k, $dk
                  $verb);
 };
 $dk_bs_zeilen = array(
-    $dk_bs_vi_z(1, 'BT_VI', 'DOCKERNG_AUSFALL', 'Z01_PARAM', $dk_bs_strich),
+    $dk_bs_vi_z(1, 'BT_VIV', 'DOCKERNG_AUSFALL', 'Z01_PARAM', $dk_bs_strich),
     $dk_bs_zl(2, 'BT_SCHWELL', 'Z02', 'Z02_PARAM', 'V = #1'),
-    $dk_bs_vi_z(3, 'BT_VI', 'DOCKERNG_FEHLT', 'Z03_PARAM', $dk_bs_strich),
+    $dk_bs_vi_z(3, 'BT_VIV', 'DOCKERNG_FEHLT', 'Z03_PARAM', $dk_bs_strich),
     $dk_bs_zl(4, 'BT_SCHWELL', 'Z04', 'Z04_PARAM', 'V = #3'),
     $dk_bs_zl(5, 'BT_ODER', 'Z05', '', 'I1 = #2, I2 = #4'),
-    $dk_bs_vi_z(6, 'BT_VI', 'DOCKERNG_ZAEHLER', 'Z06_PARAM', $dk_bs_strich),
+    $dk_bs_vi_z(6, 'BT_VIV', 'DOCKERNG_ZAEHLER', 'Z06_PARAM', $dk_bs_strich),
     $dk_bs_zl(7, 'BT_VALID', 'Z07', 'Z07_PARAM', 'V = #6, En = #11'),
     $dk_bs_zl(8, 'BT_ODER', 'Z08', '', 'I1 = #5, I2 = ' . $dk_bs_aus('error', 7)),
     $dk_bs_zl(9, 'BT_EVZ', 'Z09', 'Z09_PARAM', $dk_bs_ein(8)),

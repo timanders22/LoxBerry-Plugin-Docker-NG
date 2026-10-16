@@ -3,9 +3,20 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.16 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.17 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.17
+
+* **Textberichtigungen der Einbindungstabelle** (Reiter Einbindung in Loxone, Schritt 4), wortgleich mit
+  der Baustein-Liste des Musterprojekts: #1, #3 und #6 tragen wie die übrigen Eingänge den Vorlagentitel
+  „Docker NG“ im Typ und nennen ihre Bedeutung (ausgefallene Container, fehlende überwachte Container,
+  Herzschlag) statt „aus der Vorlage“; #10 nennt den Meldetext statt „Betreff frei wählbar“. Keine
+  Leitung ändert sich, Bild und Importdatei bleiben.
+* **README:** Die Beispielantwort unter „Der Endpunkt für Loxone“ endet wieder mit `TAKTALTER` (seit
+  1.3.9 hinten an der Statuszeile, fehlte hier).
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät und nicht in Loxone Config angesehen.
 
 ## Neu in 1.3.16
 
@@ -1027,7 +1038,7 @@ Zwei Pakete sind aus der Paketliste entfernt:
 
 | Aufruf | Antwort |
 |---|---|
-| `aktion=status` | `DOCKERNG;OK=1;GESAMT=3;LAEUFT=3;GESTOPPT=0;AUSFALL=0;PAUSIERT=0;UNGESUND=0;FEHLT=0;SCHLEIFE=0;PORTAINER=1;ZAEHLER=42;PLATZFREI=4096;GRUND=-;C_portainer=1;H_portainer=2` |
+| `aktion=status` | `DOCKERNG;OK=1;GESAMT=3;LAEUFT=3;GESTOPPT=0;AUSFALL=0;PAUSIERT=0;UNGESUND=0;FEHLT=0;SCHLEIFE=0;PORTAINER=1;ZAEHLER=42;PLATZFREI=4096;GRUND=-;C_portainer=1;H_portainer=2;TAKTALTER=12` |
 | `aktion=container&name=…` | Zustand eines einzelnen Containers |
 | `aktion=liste` | eine Zeile je Container |
 | `aktion=roh` | vollständiger Zustand als JSON |
