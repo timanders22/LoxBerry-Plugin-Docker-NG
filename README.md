@@ -3,9 +3,18 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.17 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.18 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.18
+
+* **Einbindung in Loxone:** Eingang En der Analogwertvalidierung (#7 „Docker oder LoxBerry schweigt“) nicht
+  negieren (Hinweis zu #7 und neues Bild). Config legt den Eingang negiert an; die Konstante 1 (#11) kam
+  dann als 0 an, und ohne diese Korrektur löste die Ausfallmeldung nie aus. Wer die Seite schon gebaut hat:
+  im Eigenschaftsfenster der Analogwertvalidierung unter Parameter den Haken bei „En“ entfernen. Der Hinweis
+  zu #7 sagte bisher, unbeschaltet zeige En Aus; richtig ist: mit dem Haken steht ein unbeschaltetes En auf EIN.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät und nicht in Loxone Config angesehen.
 
 ## Neu in 1.3.17
 
