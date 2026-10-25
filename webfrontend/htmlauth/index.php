@@ -12,6 +12,11 @@
  * und bin/dockerng_takt.php; MQTT steht DANEBEN, nicht anstelle des
  * HTTP-Endpunkts, und ist ab Werk aus.
  *
+ * SEIT 1.3.19 (Gruppe 21): MQTT ist fuer Neuinstallationen ab Werk an, der HTTP-Endpunkt ist der alte Weg hinter
+ * dem Haken endpunkt_ein (Update an, Neuinstallation aus); Loxone liest ueber das MQTT-Gateway in Virtuelle
+ * Eingaenge (Namenstabelle im Reiter Einbindung). Neu: Container-Neustart aus Loxone ueber die Befehlsbruecke
+ * (zwei Haken im Reiter MQTT, Spalte "Neustart aus Loxone" und Knopf "Neu starten" in der Containertabelle).
+ *
  * Alle Bezeichner tragen das Kuerzel dk_, weil LBWeb::lbheader() eigene globale
  * Variablen setzt und es sonst zu Namenskollisionen kommt.
  */
@@ -352,6 +357,22 @@ if (($_POST['speichern_wache'] ?? '') === '1') {
         }
         if (!$dk_fehler) { $dk_neu['wachliste'] = $dk_w; }
     }
+    /* V3 (1.3.19, E-E6): die Neustartliste kommt mit demselben Formular. Ein Name, der nicht ins Muster passt, wird
+     * abgewiesen; gespeichert werden nur Namen der (neuen) ausdruecklichen Wachliste - dk_config_normieren()
+     * setzt das beim Lesen ebenso durch. */
+    if (!$dk_fehler) {
+        $dk_ne = array();
+        $dk_neroh = (isset($_POST['neustart_erlaubt']) && is_array($_POST['neustart_erlaubt'])) ? $_POST['neustart_erlaubt'] : array();
+        foreach ($dk_neroh as $dk_nn) {
+            if (!dk_name_gueltig($dk_nn)) {
+                $dk_fehler[] = dk_t('FEHLER.NAME');
+                $dk_beanstandet[] = 'neustart_erlaubt';
+                break;
+            }
+            if (in_array($dk_nn, $dk_neu['wachliste'], true) && !in_array($dk_nn, $dk_ne, true)) { $dk_ne[] = $dk_nn; }
+        }
+        if (!$dk_fehler) { $dk_neu['neustart_erlaubt'] = $dk_ne; }
+    }
     if (!$dk_fehler) {
         if (dk_config_schreiben($dk_neu)) {
             $dk_cfg = $dk_neu;
@@ -371,6 +392,9 @@ if (($_POST['speichern_wache'] ?? '') === '1') {
 if (($_POST['speichern_mqtt'] ?? '') === '1') {
     $dk_neu = $dk_cfg;
     $dk_neu['mqtt_aktiv'] = isset($_POST['mqtt_aktiv']) ? 1 : 0;
+    // V3 (1.3.19, E-E5): Befehle aus Loxone - zwei Haken, beide ab Werk aus.
+    $dk_neu['befehle_mqtt_ein'] = isset($_POST['befehle_mqtt_ein']) ? 1 : 0;
+    $dk_neu['befehle_mqtt_steuern'] = isset($_POST['befehle_mqtt_steuern']) ? 1 : 0;
 
     $dk_prae = (isset($_POST['mqtt_praefix']) && is_string($_POST['mqtt_praefix']))
                ? trim($_POST['mqtt_praefix']) : '';
@@ -399,12 +423,50 @@ if (($_POST['speichern_mqtt'] ?? '') === '1') {
                     $dk_fehler[] = dk_t('FEHLER.ABRAEUMEN');
                 }
             }
+            /* V3 (1.3.19): die Befehlsbruecke sofort schalten - der Waechter startet nach einem Start hoechstens
+             * alle 600 s neu. */
+            list($dk_brc, $dk_bwas, $dk_baus) = dk_bruecke_schalten($dk_neu);
+            if ($dk_bwas === 'start') {
+                if ($dk_brc === 0) { $dk_meldung .= ' ' . dk_t('BEFEHL.M_EIN'); }
+                else { $dk_fehler[] = dk_e(sprintf(dk_t('BEFEHL.M_START_FEHL'), $dk_baus)); }
+            } elseif ($dk_bwas === 'stop') {
+                if ($dk_brc === 0) { $dk_meldung .= ' ' . dk_t('BEFEHL.M_AUS'); }
+                else { $dk_fehler[] = dk_e(sprintf(dk_t('BEFEHL.M_STOP_FEHL'), $dk_baus)); }
+            }
         } else {
             $dk_fehler[] = dk_t('FEHLER.SCHREIBEN');
         }
     }
     dk_weiter('mqtt', dk_mit_eingaben(array('meldung' => $dk_meldung, 'fehler' => $dk_fehler),
         'mqtt', $dk_beanstandet));
+}
+
+/* ---------------- HTTP-Endpunkt fuer Loxone (1.3.19, Entwurf 3.2) ----------------
+ * Eigenes Formular im Reiter Einbindung, Abschnitt "Bestehende Anlagen". Fasst NUR endpunkt_ein an. */
+if (($_POST['speichern_endpunkt'] ?? '') === '1') {
+    $dk_neu = $dk_cfg;
+    $dk_neu['endpunkt_ein'] = isset($_POST['endpunkt_ein']) ? 1 : 0;
+    if (dk_config_schreiben($dk_neu)) {
+        $dk_meldung = dk_t($dk_neu['endpunkt_ein'] ? 'MELDUNG.ENDPUNKT_AN' : 'MELDUNG.ENDPUNKT_AUS');
+    } else {
+        $dk_fehler[] = dk_t('FEHLER.SCHREIBEN');
+    }
+    dk_weiter('loxone', array('meldung' => $dk_meldung, 'fehler' => $dk_fehler));
+}
+
+/* ---------------- Container neu starten (V3, 1.3.19, E-E6) ----------------
+ * Knopf je Zeile der Containertabelle (orange, Rueckfrage). Dieselbe Funktion wie der Befehl aus Loxone, mit
+ * Quelle 'oberflaeche': es gelten nur Name, eigener Portainer und "vorhanden" - Neustartliste, Sperre und
+ * Broker-Schutz nicht (der Anwender entscheidet selbst, die Rueckfrage warnt). Die Sperre setzt er mit. */
+if (isset($_POST['neustart_container'])) {
+    $dk_nsn = (isset($_POST['ns_name']) && is_string($_POST['ns_name'])) ? trim($_POST['ns_name']) : '';
+    if (dk_vorgang_laeuft()) {
+        dk_weiter('settings', array('fehler' => array(dk_t('FEHLER.VORGANG_LAEUFT'))));
+    }
+    $dk_nsr = dk_befehl_neustart($dk_nsn, 'oberflaeche');
+    dk_weiter('settings', $dk_nsr['ok']
+        ? array('meldung' => sprintf(dk_t('BEFEHL.M_NEUSTART_OK'), $dk_nsn))
+        : array('fehler' => array(dk_e(sprintf(dk_t('BEFEHL.M_NEUSTART_FEHL'), $dk_nsr['grund'])))));
 }
 
 /* ---------------- Minutentakt von Hand ausloesen ----------------
@@ -728,6 +790,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dk_zurueck'])) {
              * stillschweigend an. Gefunden beim Umbau auf die Umleitung,
              * nicht von einem Werkzeug. */
             $dk_m['meldung'] = sprintf(dk_t('EINST.SICH_UEBERNOMMEN'), $dk_n);
+            /* N6 (1.3.19): anderes Praefix oder MQTT aus aus der Sicherung - die retained Themen des alten Praefixes
+             * werden vorgemerkt wie beim Speichern im Reiter MQTT. Die Bruecke folgt sofort. */
+            if (!empty($dk_cfg['mqtt_aktiv'])
+                && (empty($dk_neu['mqtt_aktiv']) || $dk_neu['mqtt_praefix'] !== $dk_cfg['mqtt_praefix'])) {
+                $dk_nv = dk_mqtt_abraeumen_vormerken($dk_cfg['mqtt_praefix']);
+                if ($dk_nv >= 0) {
+                    $dk_m['meldung'] .= ' ' . sprintf(dk_t('MELDUNG.ABRAEUMEN_VORGEMERKT'), $dk_nv, $dk_cfg['mqtt_praefix']);
+                }
+            }
+            dk_bruecke_schalten(dk_config());
             if ($dk_shinweis) {
                 // Hinweise gehen nicht in die Beanstandungsliste (Regeln/04):
                 // uebernommen ist ja alles Gueltige.
@@ -755,7 +827,8 @@ if (class_exists('LBWeb', false)) {
      * templates/lang/ suchen - also help_de.ini und help_en.ini. Die Auswahl
      * hier ist damit ueberfluessig; die Sprache waehlt LoxBerry selbst.
      */
-    LBWeb::lbheader('Docker NG', 'https://wiki.loxberry.de/', 'help.html');
+    // D16 (1.3.19): die Wiki-Seite des Plugins statt der Startseite des Wikis.
+    LBWeb::lbheader('Docker NG', 'https://wiki.loxberry.de/plugins/docker_ng_timanders22/start', 'help.html');
 }
 
 ?>
@@ -844,6 +917,13 @@ if (class_exists('LBWeb', false)) {
     padding-top: 10px; border-top: 1px solid #e0e0e0; }
 .sm-schritte { margin: 6px 0 0 18px; padding: 0; }
 .sm-schritte li { margin: 3px 0; }
+/* Gruppe 21 (1.3.19): graue Hinweise (ausgeschaltet ist eine Entscheidung, Regeln/04), Knoepfe in Tabellenzeilen,
+   der zugeklappte alte HTTP-Weg. */
+.sm-grau { border: 1px solid #d5d5d5; background: #f3f3f3; border-radius: 6px; padding: 10px 12px; margin: 12px 0;
+    font-size: 0.9em; color: #555; }
+.sm-wrap .sm-btn.sm-btn-zeile { min-width: 0; padding: 4px 10px !important; font-size: 0.85em; margin-top: 4px !important; }
+.sm-alt { border: 1px solid #ddd; border-radius: 6px; padding: 8px 12px; margin: 16px 0; background: #fafafa; }
+.sm-alt > summary { cursor: pointer; font-weight: 700; color: #4f7d17; }
 </style>
 
 <div class="sm-wrap">
@@ -1088,40 +1168,65 @@ if ($dk_verwaist) { ?>
 <span class="sm-hilfe"><?= dk_t('EINST.H_VERWAIST') ?></span></div>
 <?php } ?>
 <?php if ($dk_z['liste']) { ?>
+<?php
+/* Gruppe 21 (1.3.19): Containertabelle mit Spalte "Neustart aus Loxone" (V3, E-E6) und je Zeile einem orangen Knopf
+ * "Neu starten" mit Rueckfrage (Regeln/04 :274/:283). Das Kaestchen wirkt nur fuer Container mit Haken in der
+ * Wachliste (ausdrueckliche Wachliste - "alle" ist keine Freigabe); gesperrt mit Grund beim eigenen Portainer, bei
+ * einem Container mit dem eigenen Label und bei Broker-/Gateway-Containern (fester Schutz, E-E2). Der Knopf haengt
+ * ueber das HTML-Attribut form= an einem eigenen Formular unter der Tabelle (kein Formular im Formular); keiner beim
+ * eigenen Portainer (dort der vorhandene Knopf). OOM (V2): Zusatz in der Spalte Stand, wenn der Container nicht laeuft. */
+$dk_ns_formen = array();
+$dk_ns_liste = dk_eingabe_liste('wache', 'neustart_erlaubt');
+$dk_ns_eigen = ($dk_eigen_ok && $dk_eigen !== null) ? $dk_eigen[0] : null;
+$dk_ns_schutzports = dk_schutzports();
+?>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <input data-role="none" type="hidden" name="wache_gesetzt" value="1">
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th><?= dk_e(dk_t('EINST.T_WACHE')) ?></th><th><?= dk_e(dk_t('EINST.T_NAME')) ?></th><th><?= dk_e(dk_t('EINST.T_ABBILD')) ?></th><th><?= dk_e(dk_t('EINST.T_PLUGIN')) ?></th><th><?= dk_e(dk_t('EINST.T_STAND')) ?></th><th><?= dk_e(dk_t('EINST.T_GESUND')) ?></th><th><?= dk_e(dk_t('EINST.T_AUTOSTART')) ?></th><th><?= dk_e(dk_t('EINST.T_ZUSTAND')) ?></th><th><?= dk_e(dk_t('EINST.T_PORTS')) ?></th></tr>
+<tr><th><?= dk_e(dk_t('EINST.T_WACHE')) ?></th><th><?= dk_e(dk_t('EINST.T_NAME')) ?></th><th><?= dk_e(dk_t('EINST.T_ABBILD')) ?></th><th><?= dk_e(dk_t('EINST.T_PLUGIN')) ?></th><th><?= dk_e(dk_t('EINST.T_STAND')) ?></th><th><?= dk_e(dk_t('EINST.T_GESUND')) ?></th><th><?= dk_e(dk_t('EINST.T_AUTOSTART')) ?></th><th><?= dk_e(dk_t('EINST.T_ZUSTAND')) ?></th><th><?= dk_e(dk_t('EINST.T_PORTS')) ?></th><th><?= dk_e(dk_t('BEFEHL.T_SPALTE')) ?></th></tr>
 <?php $dk_seitenhost = dk_seitenhost(); ?>
 <?php $dk_wl = dk_eingabe_liste('wache', 'wache'); /* X-2: nach einer Beanstandung die angehakten */ ?>
-<?php foreach ($dk_z['liste'] as $dk_c) { ?>
+<?php foreach ($dk_z['liste'] as $dk_c) {
+    $dk_ns_sperre = '';
+    if ($dk_ns_eigen !== null && $dk_c['name'] === $dk_ns_eigen) { $dk_ns_sperre = dk_t('BEFEHL.T_GESPERRT_EIGEN'); }
+    elseif (isset($dk_c['lb_ordner']) && is_string($dk_c['lb_ordner']) && $dk_c['lb_ordner'] === $dk_p['plugin']) { $dk_ns_sperre = dk_t('BEFEHL.T_GESPERRT_EIGEN'); }
+    elseif (dk_neustart_schutz($dk_c, $dk_ns_schutzports) !== '') { $dk_ns_sperre = dk_t('BEFEHL.T_GESPERRT_BROKER'); }
+    $dk_ns_an = $dk_ns_liste !== null ? in_array($dk_c['name'], $dk_ns_liste, true) : in_array($dk_c['name'], $dk_cfg['neustart_erlaubt'], true);
+    $dk_ns_knopf = ($dk_ns_eigen === null || $dk_c['name'] !== $dk_ns_eigen);
+    if ($dk_ns_knopf) { $dk_ns_formen[] = $dk_c['name']; }
+?>
 <tr><td><input data-role="none" type="checkbox" name="wache[]" value="<?= dk_e($dk_c['name']) ?>"
 	<?= ($dk_wl !== null ? in_array($dk_c['name'], $dk_wl, true)
 	     : ($dk_alle_ueberwacht || in_array($dk_c['name'], $dk_wache, true))) ? 'checked' : '' ?>></td>
 	<td><span class="sm-mono"><?= dk_e($dk_c['name']) ?></span></td>
 	<td><?= dk_e($dk_c['image']) ?><?php if (isset($dk_updates[$dk_c['name']]) && (int) $dk_updates[$dk_c['name']] === 1) { ?>
 		<br><span class="sm-hilfe"><?= dk_e(dk_t('EINST.T_UPDATE')) ?></span><?php } ?></td>
-	<td><?= dk_plugin_html($dk_c) /* X-5: fertig maskiert */ ?></td>
-	<td class="<?= $dk_c['laeuft'] ? 'sm-an' : ($dk_c['ausfall'] ? 'sm-aus' : '') ?>"><?= dk_e(dk_t('STAND.' . strtoupper($dk_c['zustand']))) ?></td>
+	<td><?= dk_plugin_html($dk_c) /* X-5, V1: fertig maskiert */ ?></td>
+	<td class="<?= $dk_c['laeuft'] ? 'sm-an' : ($dk_c['ausfall'] ? 'sm-aus' : '') ?>"><?= dk_e(dk_t('STAND.' . strtoupper($dk_c['zustand']))) ?><?php if (!empty($dk_c['oom']) && empty($dk_c['laeuft'])) { ?>
+		<br><span class="sm-aus"><?= dk_e(dk_t('EINST.T_OOM')) ?></span><?php } ?></td>
 	<td class="<?= $dk_c['gesund'] === 3 ? 'sm-aus' : ($dk_c['gesund'] === 2 ? 'sm-an' : '') ?>"><?= dk_e(dk_t('GESUND.G' . (int) $dk_c['gesund'])) ?></td>
 	<td class="<?= $dk_c['autostart'] === 0 ? 'sm-aus' : '' ?>"><?= dk_e(dk_t('AUTOSTART.A' . (int) $dk_c['autostart'])) ?></td>
 	<td><?= dk_e($dk_c['status']) ?></td>
-	<td><?= dk_ports_html($dk_c, $dk_seitenhost) /* C11: fertig maskiert */ ?></td></tr>
+	<td><?= dk_ports_html($dk_c, $dk_seitenhost) /* C11: fertig maskiert */ ?></td>
+	<td><?php if ($dk_ns_sperre !== '') { ?><input data-role="none" type="checkbox" disabled title="<?= dk_e($dk_ns_sperre) ?>"> <span class="sm-hilfe"><?= dk_e($dk_ns_sperre) ?></span><?php } else { ?><label><input data-role="none" type="checkbox" name="neustart_erlaubt[]" value="<?= dk_e($dk_c['name']) ?>"<?= $dk_ns_an ? ' checked' : '' ?><?= dk_markierung('neustart_erlaubt') ?>></label><?php } ?>
+	<?php if ($dk_ns_knopf) { ?><br><button data-role="none" class="sm-btn sm-b-aktion sm-btn-zeile" type="submit" form="dk_ns_<?= count($dk_ns_formen) - 1 ?>" onclick="return confirm(<?= dk_e(json_encode(sprintf(dk_t($dk_ns_sperre === dk_t('BEFEHL.T_GESPERRT_BROKER') ? 'BEFEHL.F_RUECKFRAGE_BROKER' : 'BEFEHL.F_NEUSTART_RUECKFRAGE'), $dk_c['name']))) ?>);"><?= dk_e(dk_t('BEFEHL.B_NEUSTART')) ?></button><?php } ?></td></tr>
 <?php } ?>
 <?php
 /* Entscheidung 19 (B-Nachzug 01.10.2026): Container der Wachliste, die es
  * nicht gibt, stehen als eigene Zeile da (angehakt). Bis 1.3.11 fehlten sie
  * im Formular, und jedes Speichern der Wachliste warf sie still hinaus -
  * obwohl der Hinweis oben sagt, man solle "den Haken wegnehmen". Jetzt
- * bleibt ein Eintrag, bis sein Haken weggenommen wird. */
+ * bleibt ein Eintrag, bis sein Haken weggenommen wird. Ein Haken in der
+ * Neustartliste bleibt mit (1.3.19), ein Knopf fehlt - es gibt nichts zu starten. */
 foreach ($dk_fehlende as $dk_fn) { ?>
 <tr><td><input data-role="none" type="checkbox" name="wache[]" value="<?= dk_e($dk_fn) ?>"
 	<?= ($dk_wl !== null ? in_array($dk_fn, $dk_wl, true) : true) ? 'checked' : '' ?>></td>
 	<td><span class="sm-mono"><?= dk_e($dk_fn) ?></span></td>
-	<td colspan="7" class="sm-aus"><?= dk_e(dk_t('EINST.WACHE_NICHT_DA')) ?></td></tr>
+	<td colspan="7" class="sm-aus"><?= dk_e(dk_t('EINST.WACHE_NICHT_DA')) ?></td>
+	<td><?php if (in_array($dk_fn, $dk_cfg['neustart_erlaubt'], true)) { ?><input data-role="none" type="hidden" name="neustart_erlaubt[]" value="<?= dk_e($dk_fn) ?>"><?php } ?>&ndash;</td></tr>
 <?php } ?>
 </table>
 </div>
@@ -1130,13 +1235,14 @@ foreach ($dk_fehlende as $dk_fn) { ?>
 	<?= dk_e(dk_t('EINST.L_WACHE_ALLE')) ?></label>
 	<p class="sm-hilfe"><?= dk_t('EINST.H_WACHE') ?></p>
 </div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i><?= dk_e(dk_t('LEGENDE.AKTION_WACHE')) ?></span>
-</div>
+<div class="sm-warnung"><?= dk_t('BEFEHL.H_SPALTE') ?></div>
 <div class="sm-knopfreihe">
 	<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern_wache" value="1"><?= dk_e(dk_t('EINST.B_WACHE')) ?></button>
 </div>
 </form>
+<?php foreach ($dk_ns_formen as $dk_ns_i => $dk_ns_n) { ?>
+<form action="index.php" method="post" id="dk_ns_<?= (int) $dk_ns_i ?>"><input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>"><input data-role="none" type="hidden" name="activetab" value="tab-settings"><input data-role="none" type="hidden" name="neustart_container" value="1"><input data-role="none" type="hidden" name="ns_name" value="<?= dk_e($dk_ns_n) ?>"></form>
+<?php } ?>
 <p class="sm-hilfe"><?= dk_t('EINST.CONTAINER_HINWEIS') ?></p>
 <?php } else { ?>
 <div class="sm-hinweis"><?= dk_t('EINST.KEINE_CONTAINER') ?></div>
@@ -1204,9 +1310,7 @@ foreach ($dk_fehlende as $dk_fn) { ?>
 	<label><input data-role="none" type="checkbox" name="token_neu" value="1"<?= dk_markierung('token_neu') ?>> <?= dk_e(dk_t('EINST.L_TOKENNEU')) ?></label>
 	<p class="sm-hilfe"><?= dk_t('EINST.H_TOKENNEU') ?></p>
 </div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i><?= dk_e(dk_t('LEGENDE.AKTION_SPEICHERN')) ?></span>
-</div>
+<?php /* N8 (1.3.19): EINE Legende oben im Reiter (Regeln/04 :278) - die beiden unteren sind entfallen. */ ?>
 <div class="sm-knopfreihe">
 	<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern" value="1"><?= dk_e(dk_t('ALLGEMEIN.SPEICHERN')) ?></button>
 </div>
@@ -1256,6 +1360,9 @@ foreach ($dk_fehlende as $dk_fn) { ?>
 <div class="sm-seite<?= $dk_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
 <h2><?= dk_e(dk_t('MQTT.TITEL')) ?></h2>
 <p class="sm-hilfe"><?= dk_t('MQTT.EINLEITUNG') ?></p>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i><?= dk_e(dk_t('LEGENDE.AKTION_SPEICHERN')) ?></span>
+</div>
 
 <?php if (!$dk_mqttlage['gefunden']) { ?>
 <div class="sm-warnung"><?= dk_t('MQTT.KEIN_GATEWAY') ?></div>
@@ -1268,22 +1375,34 @@ foreach ($dk_fehlende as $dk_fn) { ?>
 <?php } else { ?>
 <div class="sm-hinweis"><?= sprintf(dk_t('MQTT.GATEWAY_OK'), (int) $dk_mqttlage['udpport']) ?></div>
 <?php } ?>
+<?php if (empty($dk_cfg['mqtt_aktiv'])) { /* E-E3 (1.3.19): grau, kein Fehler - ausgeschaltet ist eine Entscheidung */ ?>
+<div class="sm-grau"><?= dk_t('MQTT.AUS_HINWEIS') ?></div>
+<?php } ?>
 
 <!-- DREI AUSGAENGE, nicht einer. Bis 1.3.3 ging der Pflichtsatz fuer
      Gateway V1 unbedingt hinaus - auch an jede Anlage mit Fassung 2, wo
      nichts einzutragen ist und der LoxBerry-Kern das Eingabefeld abschaltet.
      Ist die Fassung nicht lesbar, stehen BEIDE Faelle da: einen von beiden zu
-     behaupten waere fuer die Haelfte der Anlagen falsch. -->
+     behaupten waere fuer die Haelfte der Anlagen falsch.
+     Seit 1.3.19 (Entwurf 2.5): unter Fassung 2 die V2-Hakenliste aus dk_v2_haken() - Noncached nur status/ok. -->
 <div class="sm-step"><b><?= dk_e(dk_t('MQTT.S1')) ?></b><br>
 <?= sprintf(dk_t('MQTT.S1_EINLEITUNG'), dk_e($dk_cfg['mqtt_praefix'])) ?>
 <?php $dk_gwf = (int) $dk_mqttlage['fassung']; ?>
-<?php if ($dk_gwf >= 2) { ?>
-<div class="sm-hinweis"><?= dk_t('MQTT.S1_V2') ?></div>
-<?php } elseif ($dk_gwf === 1) { ?>
+<?php $dk_haken = dk_v2_haken($dk_cfg); ?>
+<?php if ($dk_gwf === 1 || $dk_gwf === 0) { ?>
 <div class="sm-warnung"><?= dk_t('MQTT.S1_V1') ?></div>
-<?php } else { ?>
-<div class="sm-warnung"><?= dk_t('MQTT.S1_V1') ?></div>
-<div class="sm-hinweis"><?= dk_t('MQTT.S1_V2') ?></div>
+<?php } ?>
+<?php if ($dk_gwf >= 2 || $dk_gwf === 0) { ?>
+<div class="sm-hinweis"><?= dk_t('MQTT.S1_V2') ?><br>
+<?= sprintf(dk_t('MQTT.V2_HAKENLISTE'), count($dk_haken)) ?>
+<ul class="sm-schritte">
+<?php foreach ($dk_haken as $dk_hk) { ?>
+<li><span class="sm-mono"><?= dk_e($dk_hk['thema']) ?></span><?= $dk_hk['v2'] === 'N' ? ' &mdash; ' . dk_e(dk_t('MQTT.NONCACHED')) : '' ?><?= $dk_hk['quelle'] === 'bruecke' ? ' &mdash; ' . dk_e(dk_t('MQTT.NUR_BEFEHLE')) : '' ?></li>
+<?php } ?>
+</ul>
+<?= dk_t('MQTT.V2_RECONNECT') ?></div>
+<?php } ?>
+<?php if ($dk_gwf === 0) { ?>
 <div class="sm-hilfe"><?= dk_t('MQTT.S1_UNBEKANNT') ?></div>
 <?php } ?>
 </div>
@@ -1302,8 +1421,21 @@ foreach ($dk_fehlende as $dk_fn) { ?>
 	       value="<?= dk_e(dk_eingabe('mqtt', 'mqtt_praefix', $dk_cfg['mqtt_praefix'])) ?>" size="24"<?= dk_markierung('mqtt_praefix') ?>>
 	<p class="sm-hilfe"><?= dk_t('MQTT.H_PRAEFIX') ?></p>
 </div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-aktion"></i><?= dk_e(dk_t('LEGENDE.AKTION_SPEICHERN')) ?></span>
+<?php /* V3 (1.3.19, E-E5): Befehle aus Loxone - zwei Haken, beide ab Werk aus. Gespeichert mit diesem Formular; danach
+       * wird die Befehlsbruecke sofort geschaltet (dk_bruecke_schalten()). */ ?>
+<h3><?= dk_e(dk_t('BEFEHL.H_REITER')) ?></h3>
+<div class="sm-feld">
+	<label><input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1" <?= dk_eingabe_an('mqtt', 'befehle_mqtt_ein', $dk_cfg['befehle_mqtt_ein']) ? 'checked' : '' ?>>
+	<?= dk_e(dk_t('BEFEHL.L_ANNEHMEN')) ?></label>
+	<p class="sm-hilfe"><?= dk_t('BEFEHL.H_ANNEHMEN') ?></p>
+	<?php if (!empty($dk_cfg['befehle_mqtt_ein']) && empty($dk_cfg['mqtt_aktiv'])) { /* Geraetetest 25.10.: Bruecke steht ohne MQTT */ ?>
+	<div class="sm-warnung"><?= dk_t('BEFEHL.MQTT_AUS') ?></div>
+	<?php } ?>
+</div>
+<div class="sm-feld">
+	<label><input data-role="none" type="checkbox" name="befehle_mqtt_steuern" value="1" <?= dk_eingabe_an('mqtt', 'befehle_mqtt_steuern', $dk_cfg['befehle_mqtt_steuern']) ? 'checked' : '' ?>>
+	<?= dk_e(dk_t('BEFEHL.L_STEUERN')) ?></label>
+	<p class="sm-hilfe"><?= dk_t('BEFEHL.H_STEUERN') ?></p>
 </div>
 <div class="sm-knopfreihe">
 	<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern_mqtt" value="1"><?= dk_e(dk_t('ALLGEMEIN.SPEICHERN')) ?></button>
@@ -1316,19 +1448,21 @@ foreach ($dk_fehlende as $dk_fn) { ?>
 	   * Senden benutzt (dk_mqtt_themen). Eine Anleitung, die Themen nennt, die
 	   * der Sendecode nie veroeffentlicht, schickt den Anwender in Loxone auf
 	   * die Suche nach einem Wert, den es nicht gibt - deshalb keine zweite,
-	   * von Hand gefuehrte Liste. */ ?>
+	   * von Hand gefuehrte Liste. Seit 1.3.19 mit dem Gateway-Namen (dk_gateway_name()). */ ?>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th><?= dk_e(dk_t('MQTT.T_THEMA')) ?></th><th><?= dk_e(dk_t('MQTT.T_WERT')) ?></th><th><?= dk_e(dk_t('MQTT.T_RETAIN')) ?></th></tr>
+<tr><th><?= dk_e(dk_t('MQTT.T_THEMA')) ?></th><th><?= dk_e(dk_t('MQTT.T_GATEWAY')) ?></th><th><?= dk_e(dk_t('MQTT.T_WERT')) ?></th><th><?= dk_e(dk_t('MQTT.T_RETAIN')) ?></th></tr>
 <?php /* Die Spalte kommt aus derselben Tabelle, nach der der Sender je Thema
        * 'retain' oder 'publish' waehlt (M8) - keine zweite Liste. */ ?>
 <?php foreach (dk_mqtt_themen() as $dk_th => $dk_wt) { ?>
 <tr><td><span class="sm-mono"><?= dk_e($dk_cfg['mqtt_praefix'] . '/' . $dk_th) ?></span></td>
+	<td><span class="sm-mono"><?= dk_e(dk_gateway_name($dk_cfg['mqtt_praefix'], $dk_th)) ?></span></td>
 	<td><?= dk_e($dk_wt) ?></td>
 	<td><?= dk_e(dk_mqtt_retain_eintrag($dk_th) === 1 ? dk_t('ALLGEMEIN.JA') : dk_t('ALLGEMEIN.NEIN')) ?></td></tr>
 <?php } ?>
 </table>
 </div>
+<p class="sm-hilfe"><?= dk_t('MQTT.FEHLWERT') ?></p>
 <div class="sm-warnung"><?= dk_t('MQTT.ABO') ?></div>
 </div>
 
@@ -1336,124 +1470,135 @@ foreach ($dk_fehlende as $dk_fn) { ?>
 <div class="sm-seite<?= $dk_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= dk_e(dk_t('LOX.TITEL')) ?></h2>
 <p class="sm-hilfe"><?= dk_t('LOX.EINLEITUNG') ?></p>
-
-<div class="sm-step"><b><?= dk_e(dk_t('LOX.S1')) ?></b><br>
-<?= dk_t('LOX.S1_TEXT') ?><br>
-<span class="sm-mono"><?= dk_e($dk_schema) ?>://<?= dk_e($dk_hostport) ?><?= dk_e($dk_basis) ?>&amp;aktion=status</span>
-<p class="sm-hilfe"><?= dk_t('LOX.S1_HINWEIS') ?><br>
-<?php /* Diese Beispielzeile wird aus DEMSELBEN Bauplan erzeugt wie die echte
-	   * Antwort (dk_beispielzeile in dk_lib.php). Bis 1.2.3 stand sie hier von
-	   * Hand und war falsch: das Feld GRUND= fehlte, obwohl der Endpunkt es
-	   * immer sendet - und Schritt 6 fordert den Anwender auf, die abgerufene
-	   * Zeile mit "derselben Zeile wie oben" zu vergleichen. */ ?>
-<span class="sm-mono"><?= dk_e(dk_beispielzeile()) ?></span></p>
+<?php /* Gruppe 21 (1.3.19, Entscheidung 2, Entwurf 2.5/2.7/3.1/3.2/9): Werte ueber das MQTT-Gateway in Virtuelle
+       * Eingaenge (Namenstabelle mit Kopierknopf, Berechtigung), Befehle ueber die Befehlsbruecke, die Bausteinliste
+       * des Musterprojekts (43 Zeilen, wortgleich Liste 3b731ab8 = Entwurf Abschnitt 9 + Kaskade #8/#43) - und zugeklappt der alte HTTP-Weg fuer
+       * bestehende Anlagen hinter dem Haken endpunkt_ein. EINE Legende oben im Reiter (N8, Regeln/04 :278). */
+$dk_prae = $dk_cfg['mqtt_praefix'];
+$dk_namen = dk_mqtt_namenstabelle($dk_cfg);
+$dk_ep_an = dk_endpunkt_an($dk_cfg);
+?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i><?= dk_e(dk_t('LEGENDE.TECHNIK')) ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i><?= dk_e(dk_t('LEGENDE.AKTION_SPEICHERN')) ?></span>
 </div>
+<?php if (empty($dk_cfg['mqtt_aktiv'])) { ?>
+<div class="sm-warnung"><?= dk_t('LOX.MQTT_AUS') ?></div>
+<?php } ?>
 
-<div class="sm-step"><b><?= dk_e(dk_t('LOX.S2')) ?></b><br>
+<div class="sm-step"><b><?= dk_e(dk_t('LOX.N_TITEL')) ?></b><br>
+<?= sprintf(dk_t('LOX.N_TEXT'), dk_e($dk_prae)) ?>
 <div class="sm-breit">
 <table class="sm-tbl">
-<tr><th><?= dk_e(dk_t('LOX.T_TITEL')) ?></th><th><?= dk_e(dk_t('LOX.T_ERKENNUNG')) ?></th><th><?= dk_e(dk_t('LOX.T_BEDEUTUNG')) ?></th></tr>
-<?php /* Die Zeilen kommen aus derselben Liste, aus der auch die Importdatei
-	   * gebaut wird - so koennen Anleitung und Vorlage nicht auseinanderlaufen. */ ?>
-<?php foreach (dk_lox_felder() as $dk_f) { ?>
-<tr><td>DOCKERNG_<?= dk_e($dk_f[0]) ?></td>
-	<td><span class="sm-mono"><?= dk_e($dk_f[0]) ?>=\v</span></td>
-	<td><?= dk_e($dk_f[1]) ?></td></tr>
-<?php } ?>
-<?php foreach ($dk_z['liste'] as $dk_c) { $dk_s = preg_replace('/[^A-Za-z0-9_]/', '_', $dk_c['name']); ?>
-<tr><td>DOCKERNG_C_<?= dk_e($dk_s) ?></td>
-	<td><span class="sm-mono">C_<?= dk_e($dk_s) ?>=\v</span></td>
-	<td><?= dk_e(sprintf(dk_t('LOX.F_CONTAINER'), $dk_c['name'])) ?></td></tr>
+<tr><th><?= dk_e(dk_t('LOX.N_NAME')) ?></th><th><?= dk_e(dk_t('MQTT.T_THEMA')) ?></th><th><?= dk_e(dk_t('LOX.N_BAUFORM')) ?></th><th><?= dk_e(dk_t('LOX.N_WERTE')) ?></th><th><?= dk_e(dk_t('LOX.N_FEHLWERT')) ?></th><th><?= dk_e(dk_t('MQTT.T_RETAIN')) ?></th><th><?= dk_e(dk_t('LOX.N_V2')) ?></th><th><?= dk_e(dk_t('LOX.N_MUSTER')) ?></th><th><?= dk_e(dk_t('LOX.N_BEDEUTUNG')) ?></th></tr>
+<?php foreach ($dk_namen as $dk_x) { ?>
+<tr><td><span class="sm-mono"><?= dk_e($dk_x['name']) ?></span> <button data-role="none" class="sm-btn sm-b-technik sm-kopie sm-btn-zeile" type="button" data-name="<?= dk_e($dk_x['name']) ?>"><?= dk_e(dk_t('LOX.K_KOPIEREN')) ?></button></td>
+	<td><span class="sm-mono"><?= dk_e($dk_x['thema']) ?></span></td>
+	<td><?= dk_e(dk_t($dk_x['text'] ? 'LOX.N_TEXTEINGANG' : 'LOX.N_EINGANG')) ?></td>
+	<td><?= dk_e($dk_x['werte']) ?></td>
+	<td><?= $dk_x['fw'] === null ? '&ndash;' : '<span class="sm-mono">' . dk_e($dk_x['fw']) . '</span>' ?></td>
+	<td><?= dk_e($dk_x['retain'] ? dk_t('ALLGEMEIN.JA') : dk_t('ALLGEMEIN.NEIN')) ?></td>
+	<td><?= dk_e(dk_t($dk_x['v2'] === 'N' ? 'LOX.V2_N' : ($dk_x['v2'] === 'H' ? 'LOX.V2_H' : 'LOX.V2_NEIN'))) ?></td>
+	<td><?= $dk_x['nr'] > 0 ? '#' . (int) $dk_x['nr'] : '&ndash;' ?></td>
+	<td><?= dk_e($dk_x['container'] !== null ? sprintf(dk_t('MQTT.' . $dk_x['th']), $dk_x['container']) : dk_t('MQTT.' . $dk_x['th'])) ?></td></tr>
 <?php } ?>
 </table>
 </div>
-<p class="sm-hilfe"><?= dk_t('LOX.S2_HINWEIS') ?></p>
-<p class="sm-hilfe"><?= dk_t('LOX.S2_AUSFALL') ?></p>
+<p class="sm-hilfe"><?= dk_t('LOX.N_BERECHTIGUNG') ?></p>
+<p class="sm-hilfe"><?= dk_t('LOX.N_FEHLWERT_ERKL') ?></p>
 </div>
 
-<div class="sm-step"><b><?= dk_e(dk_t('LOX.S3')) ?></b><br>
-<?= dk_t('LOX.S3_TEXT') ?>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i><?= dk_e(dk_t('LEGENDE.TECHNIK')) ?></span>
+<?php
+/* Schritt 2 - Befehle aus Loxone (V3). Die Befehlstabelle kommt aus bb_liste() (EINE Quelle, Stammfassung); je
+ * Container der Neustartliste eine Kopierzeile fuer den gemeinsamen Ausgang "LoxBerry MQTT-Gateway". */
+list($dk_bl, $dk_bl_fehler) = dk_bruecke_liste();
+?>
+<div class="sm-step"><b><?= dk_e(dk_t('BEFEHL.T_EINBINDUNG')) ?></b><br>
+<?= sprintf(dk_t('BEFEHL.TEXT'), (int) ($dk_mqttlage['udpport'] ? $dk_mqttlage['udpport'] : 11884)) ?>
+<?php if ($dk_bl === null) { ?>
+<div class="sm-warnung"><?= dk_e(sprintf(dk_t('BEFEHL.NICHT_LADBAR'), $dk_bl_fehler)) ?></div>
+<?php } else { ?>
+<div class="<?= (!empty($dk_cfg['mqtt_aktiv']) && !empty($dk_cfg['befehle_mqtt_ein']) && !empty($dk_cfg['befehle_mqtt_steuern'])) ? 'sm-hinweis' : 'sm-grau' ?>"><?= dk_t((!empty($dk_cfg['mqtt_aktiv']) && !empty($dk_cfg['befehle_mqtt_ein']) && !empty($dk_cfg['befehle_mqtt_steuern'])) ? 'BEFEHL.HAKEN_AN' : 'BEFEHL.HAKEN_AUS') ?></div>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th><?= dk_e(dk_t('BEFEHL.SP_TITEL')) ?></th><th><?= dk_e(dk_t('MQTT.T_THEMA')) ?></th><th><?= dk_e(dk_t('BEFEHL.SP_WERT')) ?></th><th><?= dk_e(dk_t('BEFEHL.SP_SPERRE')) ?></th><th><?= dk_e(dk_t('BEFEHL.SP_QUITTUNG')) ?></th></tr>
+<?php foreach ($dk_bl['befehle'] as $dk_bf) { ?>
+<tr><td><?= dk_e($dk_bf['titel']) ?></td>
+	<td><span class="sm-mono"><?= dk_e($dk_bf['thema']) ?></span></td>
+	<td><?= dk_e(sprintf(dk_t('BEFEHL.WERT_TEXT'), (int) $dk_bf['max_byte'])) ?></td>
+	<td><?= dk_e(sprintf(dk_t('BEFEHL.SPERRE'), (int) $dk_bf['sperre_s'])) ?></td>
+	<td><?= dk_e(dk_t('BEFEHL.QUITTUNG_AUSGEFUEHRT')) ?></td></tr>
+<?php } ?>
+</table>
 </div>
-<div class="sm-knopfreihe" style="margin-top:10px;">
-	<form action="index.php" method="post">
-	<input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
-		<input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-		<input data-role="none" type="hidden" name="download" value="xml_in">
-		<button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= dk_e(dk_t('LOX.B_XML')) ?></button>
-	</form>
-</div>
-<p class="sm-hilfe"><?= dk_t('LOX.S3_WARNUNG') ?></p>
+<?php if ($dk_cfg['neustart_erlaubt']) { ?>
+<p class="sm-hilfe"><?= dk_t('BEFEHL.KOPIER_H') ?></p>
+<ul class="sm-schritte">
+<?php foreach ($dk_cfg['neustart_erlaubt'] as $dk_nn) { $dk_bz = 'publish ' . $dk_prae . '/befehl/neustart ' . $dk_nn; ?>
+<li><span class="sm-mono"><?= dk_e($dk_bz) ?></span> <button data-role="none" class="sm-btn sm-b-technik sm-kopie sm-btn-zeile" type="button" data-name="<?= dk_e($dk_bz) ?>"><?= dk_e(dk_t('LOX.K_KOPIEREN')) ?></button></li>
+<?php } ?>
+</ul>
+<?php } else { ?>
+<p class="sm-hilfe"><?= dk_t('BEFEHL.KEINE_LISTE') ?></p>
+<?php } ?>
+<p class="sm-hilfe"><?= sprintf(dk_t('BEFEHL.QUITTUNG_H'), dk_e(dk_gateway_name($dk_prae, 'befehl/neustart/quittung')), dk_e($dk_prae . '/status/befehle')) ?></p>
+<?php } ?>
 </div>
 
 <div class="sm-step"><b><?= dk_e(dk_t('LOX.S4')) ?></b><br>
 <?= dk_t('LOX.S4_TEXT') ?>
 <?php
-/* Welle Bild 13 (1.3.16, Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das Maximum leicht
- * uebernehmen koennen; Entwurf Welle 13 dk, Entscheidungen 1-12 wie empfohlen): die Seite "Docker NG" aus
- * dem LoxBerry-Plugins Musterprojekt, dort in Loxone Config gebaut und mit leitungen_setzen.py verbunden
- * (Musterprojekt/baustein_listen.txt, Abschnitt "Docker NG", 37 Zeilen, wortgleich). Ueberschrift, Kasten
- * "So uebernehmen Sie diese Seite", Tabelle, Hinweise, Bild, Link - immer sichtbar.
- * Bis 1.3.15 stand hier eine Liste mit 11 Zeilen; sie ist #1 bis #11 geblieben (Nummern, Namen,
- * Leitungen). Geschichte dieser Zeilen: 1.2.4 AUSFALL statt GESTOPPT an #1 (GESTOPPT zaehlt planmaessig
- * beendete Container mit, die Sammelstoerung stand dauerhaft an); 1.3.9 neu geordnet, Ausfallerkennung
- * ueber den Herzschlag ZAEHLER (bei Docker-Ausfall HTTP 503, Loxone behaelt OK=1); 1.3.14 #7 ist eine
- * Analogwertvalidierung (V = Zaehler, En = Konstante 1, Ausgang error an #8), nicht die frueher hier
- * genannte Aenderungsueberwachung; 1.3.15 Konstante als eigene Zeile #11; 1.3.17 Texte nach der Liste
- * vom 16.10.2026: #1/#3/#6 Typ mit Vorlagentitel und Bedeutung statt "aus der Vorlage", #10 Meldetext.
- * Beispielcontainer der Zeilen 30-34 und 37 (E9): portainer - den legt das Plugin selbst an, und so steht
- * er im Musterprojekt. Fuehrt die Wachliste portainer nicht, der erste Container der Wachliste; dessen
- * Befehle DOCKERNG_C_/_H_ stehen dann in der Importdatei (dk_xml_virtual_in_http()).
- * Texte aus [LOX]; Zellen und Schritte maskiert (erst vsprintf, dann dk_e), Hinweise roh wie S4_ZU7.
- * Zeile: array(Nr, Typ, Name, Parameter, Eingaenge). */
+/* Welle Bild 13 (1.3.16) und Gruppe 21 (1.3.19): die Seite "Docker NG" aus dem LoxBerry-Plugins Musterprojekt
+ * (Musterprojekt/baustein_listen.txt, Abschnitt "Docker NG"; seit 1.3.19 43 Zeilen, wortgleich Liste 3b731ab8 und Entwurf
+ * entwurf_gruppe21_dk.txt Abschnitt 9, mit dem Nachzug der Hauptsitzung 43 Zeilen: Kaskade #8/#43). Die Eingaenge sind Virtuelle Eingaenge mit dem Namen, den das MQTT-Gateway
+ * vergibt (dk_gateway_name() aus Praefix und Thema - ein anderes Praefix aendert die Namen in der Liste mit); BT_VI/
+ * BT_VIV und der Rueckfall $dk_bs_vi_z sind entfallen (Sammelstelle #34). Beispielcontainer der Zeilen 30-34, 37, 39
+ * und 40: portainer - fuehrt die Wachliste portainer nicht, der erste Container der Wachliste.
+ * Texte aus [LOX]; Zellen und Schritte maskiert (erst vsprintf, dann dk_e), Hinweise roh. %1$s = Beispielcontainer,
+ * %2$s = Praefix. Zeile: array(Nr, Typ, Name, Parameter, Eingaenge). */
 $dk_bs_c = 'portainer';
 $dk_bs_w = is_array($dk_cfg['wachliste']) ? array_values($dk_cfg['wachliste']) : array();
 if ($dk_bs_w && !in_array('portainer', $dk_bs_w, true)) { $dk_bs_c = (string) $dk_bs_w[0]; }
-$dk_bs_cs = preg_replace('/[^A-Za-z0-9_]/', '_', $dk_bs_c);
-$dk_bs_arg = array('Z30_PARAM' => 1, 'Z31_PARAM' => 1, 'Z32_NAME' => 1, 'Z33_NAME' => 1, 'Z34_NAME' => 1, 'Z34_PARAM' => 1, 'Z37_NAME' => 1, 'Z37_PARAM' => 1);
+$dk_bs_args = array($dk_bs_c, $dk_prae);
 $dk_bs_t = function ($s, $a = array()) {
     $t = (string) dk_t('LOX.' . $s);
     return dk_e($a ? vsprintf($t, $a) : $t);
 };
-$dk_bs_k = function ($s) use ($dk_bs_t, $dk_bs_c, $dk_bs_arg) {
-    return $dk_bs_t($s, isset($dk_bs_arg[$s]) ? array($dk_bs_c) : array());
-};
+$dk_bs_k = function ($s) use ($dk_bs_t, $dk_bs_args) { return $dk_bs_t($s, $dk_bs_args); };
 $dk_bs_strich = '&mdash;';
 $dk_bs_ein = function ($nr) use ($dk_bs_t) { return $dk_bs_t('E_EIN', array($nr)); };
 $dk_bs_aus = function ($pin, $nr) use ($dk_bs_t) { return $dk_bs_t('E_AUSGANG', array($pin, $nr)); };
-/* Eingang der Importdatei: Typ (mit Vorlagentitel "Docker NG", fest wie in dk_xml_virtual_in_http()),
- * Name = Befehlstitel (fest). */
-$dk_bs_vi_z = function ($nr, $typ, $name, $param, $verb) use ($dk_bs_t, $dk_bs_k) {
-    return array($nr, $typ === 'BT_VIV' ? $dk_bs_t('BT_VIV', array('Docker NG')) : $dk_bs_t('BT_VI'),
-                 dk_e($name), $dk_bs_k($param), $verb);
+/* Eingang ueber das MQTT-Gateway: Typ BT_VIM, Name = Gateway-Name des Themas. */
+$dk_bs_vim = function ($nr, $thema, $param) use ($dk_bs_t, $dk_bs_k, $dk_prae, $dk_bs_strich) {
+    return array($nr, $dk_bs_t('BT_VIM'), dk_e(dk_gateway_name($dk_prae, $thema)), $dk_bs_k($param), $dk_bs_strich);
 };
 /* Uebriger Baustein: Typ-Schluessel, Name Z<nn>_NAME, Parameter Z<nn>_PARAM. */
 $dk_bs_zl = function ($nr, $typ, $s, $param, $verb) use ($dk_bs_t, $dk_bs_k, $dk_bs_strich) {
     return array($nr, $dk_bs_t($typ), $dk_bs_k($s . '_NAME'), $param === '' ? $dk_bs_strich : $dk_bs_k($param),
                  $verb);
 };
+$dk_bs_cc = 'container/' . dk_container_abschnitt($dk_bs_c) . '/';
 $dk_bs_zeilen = array(
-    $dk_bs_vi_z(1, 'BT_VIV', 'DOCKERNG_AUSFALL', 'Z01_PARAM', $dk_bs_strich),
+    $dk_bs_vim(1, 'status/ausfall', 'Z01_PARAM'),
     $dk_bs_zl(2, 'BT_SCHWELL', 'Z02', 'Z02_PARAM', 'V = #1'),
-    $dk_bs_vi_z(3, 'BT_VIV', 'DOCKERNG_FEHLT', 'Z03_PARAM', $dk_bs_strich),
+    $dk_bs_vim(3, 'status/fehlt', 'Z03_PARAM'),
     $dk_bs_zl(4, 'BT_SCHWELL', 'Z04', 'Z04_PARAM', 'V = #3'),
     $dk_bs_zl(5, 'BT_ODER', 'Z05', '', 'I1 = #2, I2 = #4'),
-    $dk_bs_vi_z(6, 'BT_VIV', 'DOCKERNG_ZAEHLER', 'Z06_PARAM', $dk_bs_strich),
+    $dk_bs_vim(6, 'status/zaehler', 'Z06_PARAM'),
     $dk_bs_zl(7, 'BT_VALID', 'Z07', 'Z07_PARAM', 'V = #6, En = #11'),
-    $dk_bs_zl(8, 'BT_ODER', 'Z08', '', 'I1 = #5, I2 = ' . $dk_bs_aus('error', 7)),
+    $dk_bs_zl(8, 'BT_ODER', 'Z08', '', 'I1 = #5, I2 = #43'),
     $dk_bs_zl(9, 'BT_EVZ', 'Z09', 'Z09_PARAM', $dk_bs_ein(8)),
     $dk_bs_zl(10, 'BT_BENACHR', 'Z10', 'Z10_PARAM', $dk_bs_ein(9)),
     $dk_bs_zl(11, 'BT_KONSTANTE', 'Z11', 'Z11_PARAM', $dk_bs_strich),
-    $dk_bs_vi_z(12, 'BT_VIV', 'DOCKERNG_GESAMT', 'Z12_PARAM', $dk_bs_strich),
-    $dk_bs_vi_z(13, 'BT_VIV', 'DOCKERNG_LAEUFT', 'Z13_PARAM', $dk_bs_strich),
-    $dk_bs_vi_z(14, 'BT_VIV', 'DOCKERNG_GESTOPPT', 'Z14_PARAM', $dk_bs_strich),
-    $dk_bs_vi_z(15, 'BT_VIV', 'DOCKERNG_PAUSIERT', 'Z15_PARAM', $dk_bs_strich),
-    $dk_bs_vi_z(16, 'BT_VIV', 'DOCKERNG_UNGESUND', 'Z16_PARAM', $dk_bs_strich),
-    $dk_bs_vi_z(17, 'BT_VIV', 'DOCKERNG_SCHLEIFE', 'Z17_PARAM', $dk_bs_strich),
-    $dk_bs_vi_z(18, 'BT_VIV', 'DOCKERNG_PORTAINER', 'Z18_PARAM', $dk_bs_strich),
-    $dk_bs_vi_z(19, 'BT_VIV', 'DOCKERNG_PLATZFREI', 'Z19_PARAM', $dk_bs_strich),
-    $dk_bs_vi_z(20, 'BT_VIV', 'DOCKERNG_TAKTALTER', 'Z20_PARAM', $dk_bs_strich),
+    $dk_bs_vim(12, 'status/gesamt', 'Z12_PARAM'),
+    $dk_bs_vim(13, 'status/laeuft', 'Z13_PARAM'),
+    $dk_bs_vim(14, 'status/gestoppt', 'Z14_PARAM'),
+    $dk_bs_vim(15, 'status/pausiert', 'Z15_PARAM'),
+    $dk_bs_vim(16, 'status/ungesund', 'Z16_PARAM'),
+    $dk_bs_vim(17, 'status/schleife', 'Z17_PARAM'),
+    $dk_bs_vim(18, 'status/portainer', 'Z18_PARAM'),
+    $dk_bs_vim(19, 'platte/frei_mb', 'Z19_PARAM'),
+    $dk_bs_vim(20, 'status/ok', 'Z20_PARAM'),
     $dk_bs_zl(21, 'BT_SCHWELL', 'Z21', 'Z21_PARAM', 'V = #16'),
     $dk_bs_zl(22, 'BT_SCHWELL', 'Z22', 'Z22_PARAM', 'V = #17'),
     $dk_bs_zl(23, 'BT_ODER', 'Z23', '', 'I1 = #21, I2 = #22'),
@@ -1463,24 +1608,32 @@ $dk_bs_zeilen = array(
     $dk_bs_zl(27, 'BT_SCHWELL', 'Z27', 'Z27_PARAM', 'V = #26'),
     $dk_bs_zl(28, 'BT_EVZ', 'Z28', 'Z28_PARAM', $dk_bs_ein(27)),
     $dk_bs_zl(29, 'BT_BENACHR', 'Z29', 'Z29_PARAM', $dk_bs_ein(28)),
-    $dk_bs_vi_z(30, 'BT_VIV', 'DOCKERNG_C_' . $dk_bs_cs, 'Z30_PARAM', $dk_bs_strich),
-    $dk_bs_vi_z(31, 'BT_VIV', 'DOCKERNG_H_' . $dk_bs_cs, 'Z31_PARAM', $dk_bs_strich),
-    $dk_bs_zl(32, 'BT_SCHWELL', 'Z32', 'Z32_PARAM', 'V = #30'),
+    $dk_bs_vim(30, $dk_bs_cc . 'laeuft', 'Z30_PARAM'),
+    $dk_bs_vim(31, $dk_bs_cc . 'gesund', 'Z31_PARAM'),
+    $dk_bs_zl(32, 'BT_SCHWELL', 'Z32', 'Z32_PARAM', 'V = #39'),
     $dk_bs_zl(33, 'BT_EVZ', 'Z33', 'Z33_PARAM', $dk_bs_ein(32)),
     $dk_bs_zl(34, 'BT_BENACHR', 'Z34', 'Z34_PARAM', $dk_bs_ein(33)),
     $dk_bs_zl(35, 'BT_STATUS', 'Z35', 'Z35_PARAM', 'V1 = #13, V2 = #12, V3 = #14, V4 = #15, V5 = #1, V6 = #3, V7 = #16, V8 = #17'),
     $dk_bs_zl(36, 'BT_STATUS', 'Z36', 'Z36_PARAM', 'V1 = #19, V2 = #20, V3 = #6, V4 = ' . $dk_bs_aus('E', 7) . ', V5 = #18'),
-    $dk_bs_zl(37, 'BT_STATUS', 'Z37', 'Z37_PARAM', 'V1 = #30, V2 = #31'),
+    $dk_bs_zl(37, 'BT_STATUS', 'Z37', 'Z37_PARAM', 'V1 = #30, V2 = #31, V3 = #20, V4 = #40'),
+    $dk_bs_zl(38, 'BT_NICHT', 'Z38', '', 'I = #20'),
+    $dk_bs_zl(39, 'BT_FORMEL', 'Z39', 'Z39_PARAM', 'I1 = #30, I2 = #20'),
+    $dk_bs_vim(40, $dk_bs_cc . 'oom', 'Z40_PARAM'),
+    $dk_bs_zl(41, 'BT_TASTE', 'Z41', 'Z41_PARAM', $dk_bs_strich),
+    $dk_bs_zl(42, 'BT_VQ', 'Z42', 'Z42_PARAM', $dk_bs_ein(41)),
+    /* Nachzug der Hauptsitzung (Liste 3b731ab8, Regeln/09: ein ODER hat genau zwei Eingaenge, Config loescht einen
+     * dritten still): statt #8 I3 = #38 die Kaskade wie APC - #43 buendelt #7 (error) und #38 fuer #8 I2. */
+    $dk_bs_zl(43, 'BT_ODER', 'Z43', 'Z43_PARAM', 'I1 = ' . $dk_bs_aus('error', 7) . ', I2 = #38'),
 );
 $dk_bs_schritte = array(
-    array('SCHRITT1', array(dk_t('REITER.EINSTELLUNGEN'), dk_t('EINST.B_WACHE'), dk_t('REITER.TEST'), dk_t('TEST.B_STATUS'))),
-    array('SCHRITT2', array(dk_t('LOX.B_XML'), $dk_bs_c)),
-    array('SCHRITT3', array('Docker NG', 'DOCKERNG_C_' . $dk_bs_cs, 'DOCKERNG_H_' . $dk_bs_cs)),
-    array('SCHRITT4', array(vsprintf(dk_t('LOX.Z34_NAME'), array($dk_bs_c)))),
+    array('SCHRITT1', array(dk_t('REITER.EINSTELLUNGEN'), dk_t('EINST.B_WACHE'), dk_t('REITER.MQTT'), dk_t('MQTT.L_AKTIV'))),
+    array('SCHRITT2', array($dk_prae)),
+    array('SCHRITT3', array(dk_gateway_name($dk_prae, 'status/laeuft'), dk_gateway_name($dk_prae, 'platte/frei_mb'))),
+    array('SCHRITT4', array(vsprintf(dk_t('LOX.Z34_NAME'), $dk_bs_args))),
     array('SCHRITT5', array(dk_t('LOX.B_EIN'), dk_t('LOX.B_PARAM'))),
     array('SCHRITT6', array()),
 );
-$dk_bs_hinweise = array('S4_ZU7', 'S4_ZU11', 'S4_ZU3', 'S4_ZU4', 'H_ZU26', 'S4_EINZELN', 'H_OK', 'H_PLATZ_MAX', 'H_DOPPELT', 'H_GRENZEN');
+$dk_bs_hinweise = array('S4_ZU7', 'S4_ZU11', 'H_ZU38', 'S4_ZU3', 'S4_ZU4', 'H_ZU26', 'S4_EINZELN', 'H_OK', 'H_ZU42', 'H_DOPPELT', 'H_GRENZEN');
 ?>
 <h4 class="sm-h4"><?= dk_e(dk_t('LOX.ABSCHNITT_H')) ?></h4>
 <div class="sm-hinweis"><b><?= dk_e(dk_t('LOX.SCHRITTE_TITEL')) ?></b>
@@ -1515,6 +1668,72 @@ $dk_bs_hinweise = array('S4_ZU7', 'S4_ZU11', 'S4_ZU3', 'S4_ZU4', 'H_ZU26', 'S4_E
 
 <div class="sm-step"><b><?= dk_e(dk_t('LOX.S6')) ?></b><br>
 <?= dk_t('LOX.S6_TEXT') ?></div>
+
+<?php /* Der alte Weg (Entscheidung 2, Entwurf 2.7/3.2): zugeklappt, hinter dem Haken endpunkt_ein. Adresse,
+       * Feldtabelle und Importdatei nur, wenn der Haken an ist - sonst antwortet der Endpunkt 403. */ ?>
+<details class="sm-alt"<?= ($dk_ep_an || dk_eingaben_aktiv() === 'endpunkt') ? ' open' : '' ?>>
+<summary><?= dk_e(dk_t('LOX.ALT_TITEL')) ?></summary>
+<p class="sm-hilfe"><?= dk_t('LOX.ALT_TEXT') ?></p>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
+<input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+<div class="sm-feld">
+	<label><input data-role="none" type="checkbox" name="endpunkt_ein" value="1" <?= dk_eingabe_an('endpunkt', 'endpunkt_ein', $dk_ep_an) ? 'checked' : '' ?>>
+	<?= dk_e(dk_t('LOX.L_ENDPUNKT')) ?></label>
+	<p class="sm-hilfe"><?= dk_t('LOX.H_ENDPUNKT') ?></p>
+</div>
+<div class="sm-knopfreihe">
+	<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern_endpunkt" value="1"><?= dk_e(dk_t('ALLGEMEIN.SPEICHERN')) ?></button>
+</div>
+</form>
+<?php if (!$dk_ep_an) { ?>
+<div class="sm-grau"><?= dk_t('LOX.ALT_AUS') ?></div>
+<?php } else { ?>
+<div class="sm-step"><b><?= dk_e(dk_t('LOX.S1')) ?></b><br>
+<?= dk_t('LOX.S1_TEXT') ?><br>
+<span class="sm-mono"><?= dk_e($dk_schema) ?>://<?= dk_e($dk_hostport) ?><?= dk_e($dk_basis) ?>&amp;aktion=status</span>
+<p class="sm-hilfe"><?= dk_t('LOX.S1_HINWEIS') ?><br>
+<?php /* Diese Beispielzeile wird aus DEMSELBEN Bauplan erzeugt wie die echte
+	   * Antwort (dk_beispielzeile in dk_lib.php). */ ?>
+<span class="sm-mono"><?= dk_e(dk_beispielzeile()) ?></span></p>
+</div>
+
+<div class="sm-step"><b><?= dk_e(dk_t('LOX.S2')) ?></b><br>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th><?= dk_e(dk_t('LOX.T_TITEL')) ?></th><th><?= dk_e(dk_t('LOX.T_ERKENNUNG')) ?></th><th><?= dk_e(dk_t('LOX.T_BEDEUTUNG')) ?></th></tr>
+<?php /* Die Zeilen kommen aus derselben Liste, aus der auch die Importdatei
+	   * gebaut wird - so koennen Anleitung und Vorlage nicht auseinanderlaufen. */ ?>
+<?php foreach (dk_lox_felder() as $dk_f) { ?>
+<tr><td>DOCKERNG_<?= dk_e($dk_f[0]) ?></td>
+	<td><span class="sm-mono"><?= dk_e($dk_f[0]) ?>=\v</span></td>
+	<td><?= dk_e($dk_f[1]) ?></td></tr>
+<?php } ?>
+<?php foreach ($dk_z['liste'] as $dk_c) { $dk_s = preg_replace('/[^A-Za-z0-9_]/', '_', $dk_c['name']); ?>
+<tr><td>DOCKERNG_C_<?= dk_e($dk_s) ?></td>
+	<td><span class="sm-mono">C_<?= dk_e($dk_s) ?>=\v</span></td>
+	<td><?= dk_e(sprintf(dk_t('LOX.F_CONTAINER'), $dk_c['name'])) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<p class="sm-hilfe"><?= dk_t('LOX.S2_HINWEIS') ?></p>
+<p class="sm-hilfe"><?= dk_t('LOX.S2_AUSFALL') ?></p>
+</div>
+
+<div class="sm-step"><b><?= dk_e(dk_t('LOX.S3')) ?></b><br>
+<?= dk_t('LOX.S3_TEXT') ?>
+<div class="sm-knopfreihe" style="margin-top:10px;">
+	<form action="index.php" method="post">
+	<input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
+		<input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+		<input data-role="none" type="hidden" name="download" value="xml_in">
+		<button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= dk_e(dk_t('LOX.B_XML')) ?></button>
+	</form>
+</div>
+<p class="sm-hilfe"><?= dk_t('LOX.S3_WARNUNG') ?></p>
+</div>
+<?php } ?>
+</details>
 </div>
 
 <!-- ======================= Test ======================= -->
@@ -1637,6 +1856,42 @@ foreach (dk_mqtt_retain_tabelle() as $dk_m1 => $dk_r1) {
 	<td class="sm-an">&#10003; <?= dk_e(sprintf(dk_t('TEST.A_THEMEN_OK'), count($dk_themen), $dk_th_geprueft)) ?></td>
 <?php } ?>
 </tr>
+<?php
+/* Gruppe 21 (1.3.19): Namenstabelle in beiden Richtungen (Entwurf 2.5), Upgrade-Marke (D19/E2), Befehlsbruecke
+ * und Sperren je Container (V3). */
+list($dk_np_ohne, $dk_np_leer, $dk_np_n) = dk_namen_pruefung($dk_cfg);
+list($dk_ml, $dk_mz, $dk_ma) = dk_marke_lage();
+list($dk_bok, $dk_btext) = dk_bruecke_lage();
+$dk_sp_txt = array();
+foreach (dk_neustart_sperre_lesen() as $dk_sn => $dk_st) {
+    if ($dk_st <= time() && time() - $dk_st < 600) { $dk_sp_txt[] = $dk_sn . ' ' . (int) ceil((600 - (time() - $dk_st)) / 60) . ' min'; }
+}
+?>
+<tr><td><?= dk_e(dk_t('TEST.F_NAMEN')) ?></td>
+<?php if (!$dk_np_ohne && !$dk_np_leer) { ?>
+	<td class="sm-an">&#10003; <?= dk_e(sprintf(dk_t('TEST.A_NAMEN_OK'), $dk_np_n)) ?></td>
+<?php } else { ?>
+	<td class="sm-aus">&#10007; <?= dk_e(sprintf(dk_t('TEST.A_NAMEN_ABW'), $dk_np_ohne ? implode(', ', $dk_np_ohne) : '-', $dk_np_leer ? implode(', ', $dk_np_leer) : '-')) ?></td>
+<?php } ?>
+</tr>
+<tr><td><?= dk_e(dk_t('TEST.F_MARKE')) ?></td>
+<?php if (!$dk_ml) { ?>
+	<td class="sm-an">&#10003; <?= dk_e(dk_t('TEST.A_MARKE_KEINE')) ?></td>
+<?php } elseif ($dk_ma >= 0 && $dk_ma < 3600) { ?>
+	<td>&bull; <?= dk_e(sprintf(dk_t('TEST.A_MARKE_FRISCH'), date('Y-m-d H:i:s', $dk_mz))) ?></td>
+<?php } else { ?>
+	<td class="sm-aus">&#10007; <?= dk_e(sprintf(dk_t('TEST.A_MARKE_ALT'), date('Y-m-d H:i:s', $dk_mz), $dk_p['marke'])) ?></td>
+<?php } ?>
+</tr>
+<tr><td><?= dk_e(dk_t('BEFEHL.T_H')) ?></td>
+<?php if ($dk_bok === true) { ?>
+	<td class="sm-an">&#10003; <?= dk_e($dk_btext) ?><?= $dk_sp_txt ? ' ' . dk_e(sprintf(dk_t('BEFEHL.T_SPERREN'), implode(', ', $dk_sp_txt))) : '' ?></td>
+<?php } elseif ($dk_bok === null) { ?>
+	<td>&mdash; <?= dk_e($dk_btext) ?><?= $dk_sp_txt ? ' ' . dk_e(sprintf(dk_t('BEFEHL.T_SPERREN'), implode(', ', $dk_sp_txt))) : '' ?></td>
+<?php } else { ?>
+	<td class="sm-aus">&#10007; <?= dk_e($dk_btext) ?></td>
+<?php } ?>
+</tr>
 <tr><td><?= dk_e(dk_t('TEST.F_ROTATION')) ?></td>
 <?php if ($dk_rot['gesetzt'] === 1) { ?>
 	<td class="sm-an">&#10003; <?= dk_e($dk_rot['max']) ?></td>
@@ -1706,32 +1961,42 @@ foreach (array($dk_p['home'] . '/webfrontend/html/plugins/' . $dk_p['plugin'] . 
     if (@is_file($dk_k)) { $dk_ep = (string) @file_get_contents($dk_k); break; }
 }
 $dk_kongruent = -1; $dk_fehlend = array(); $dk_gesendet = array();
-/* Die Formatzeichenkette des Endpunkts ist ueber mehrere Teilstuecke
- * verkettet. Ein Muster, das nur das ERSTE Anfuehrungszeichenpaar nimmt, misst
- * deshalb nur den halben Bauplan - und wird dadurch gruen, ohne etwas zu
- * pruefen. Genau das ist beim Bau der 1.3.0 passiert: die Zeile blieb gruen,
- * waehrend sechs neue Felder ausserhalb ihres Blickfelds lagen.
- *
- * Deshalb wird der GESAMTE erste Parameter von sprintf() genommen und daraus
- * jedes Teilstueck eingesammelt. Die Formatzeichenkette enthaelt kein Komma;
- * das erste Komma trennt sie sicher vom naechsten Parameter.
- */
+/* D20 (1.3.19): BEIDE Richtungen - jedes gesendete Feld ist genannt, und jedes genannte wird gesendet - und die
+ * Anhaengezeilen des Endpunkts zaehlen mit (';TAKTALTER=' und die Vorsaetze C_, H_, O_ je Container). Bis
+ * 1.3.18 las die Probe nur die sprintf-Zeile in einer Richtung: ohne die TAKTALTER-Zeile und ohne ;PLATZFREI=%d
+ * blieb sie gruen (Pruefbericht, Probe d20). Genannt ist, was die Anleitung zeigt: dk_lox_felder() und die
+ * Beispielzeile dk_beispielzeile() (GRUND und je ein Beispiel C_/H_/O_). */
 if ($dk_ep !== '' && preg_match('/\$dk_zeile\s*=\s*sprintf\(([^,]*),/s', $dk_ep, $dk_tr)) {
     if (preg_match_all("/'([^']*)'/", $dk_tr[1], $dk_teile)) {
         $dk_formatzeile = implode('', $dk_teile[1]);
         if (preg_match_all('/;([A-Z_]+)=/', $dk_formatzeile, $dk_tr2)) { $dk_gesendet = $dk_tr2[1]; }
     }
+    if (preg_match_all("/\\\$dk_zeile\s*\.=\s*';([A-Z_]+)='/", $dk_ep, $dk_tr3)) {
+        $dk_gesendet = array_merge($dk_gesendet, $dk_tr3[1]);
+    }
+    if (preg_match_all("/\\\$dk_zeile\s*\.=\s*';([A-Z])_'/", $dk_ep, $dk_tr4)) {
+        foreach ($dk_tr4[1] as $dk_v1) { $dk_gesendet[] = $dk_v1 . '_'; }
+    }
+    $dk_gesendet = array_values(array_unique($dk_gesendet));
     if ($dk_gesendet) {
-        $dk_genannt = array('GRUND');
+        $dk_genannt = array();
         foreach (dk_lox_felder() as $dk_f) { $dk_genannt[] = $dk_f[0]; }
-        $dk_fehlend = array_diff($dk_gesendet, $dk_genannt);
+        foreach (explode(';', dk_beispielzeile()) as $dk_b1) {
+            if (preg_match('/^([A-Z])_[A-Za-z0-9]/', $dk_b1, $dk_bv)) { $dk_genannt[] = $dk_bv[1] . '_'; continue; }
+            if (preg_match('/^([A-Z_]+)=/', $dk_b1, $dk_bm)) { $dk_genannt[] = $dk_bm[1]; }
+        }
+        $dk_genannt = array_values(array_unique($dk_genannt));
+        $dk_nicht_genannt = array_values(array_diff($dk_gesendet, $dk_genannt));
+        $dk_nicht_gesendet = array_values(array_diff($dk_genannt, $dk_gesendet));
+        if ($dk_nicht_genannt) { $dk_fehlend[] = sprintf(dk_t('TEST.A_KONG_NICHT_GENANNT'), implode(', ', $dk_nicht_genannt)); }
+        if ($dk_nicht_gesendet) { $dk_fehlend[] = sprintf(dk_t('TEST.A_KONG_NICHT_GESENDET'), implode(', ', $dk_nicht_gesendet)); }
         $dk_kongruent = $dk_fehlend ? 0 : 1;
     }
 }
 ?>
 <tr><td><?= dk_e(dk_t('TEST.F_KONGRUENZ')) ?></td>
 <?php if ($dk_kongruent === 1) { ?>
-	<td class="sm-an">&#10003; <?= dk_e(sprintf(dk_t("TEST.A_KONGRUENZ_OK"), count($dk_gesendet))) ?></td>
+	<td class="sm-an">&#10003; <?= dk_e(sprintf(dk_t('TEST.A_KONGRUENZ_OK'), count($dk_gesendet))) ?></td>
 <?php } elseif ($dk_kongruent === 0) { ?>
 	<td class="sm-aus">&#10007; <?= dk_e(sprintf(dk_t('TEST.A_KONGRUENZ_FEHLT'), implode(', ', $dk_fehlend))) ?></td>
 <?php } else { ?>
@@ -1864,7 +2129,8 @@ if (@is_dir($dk_cronwurzel)) {
 <?php } ?>
 </tr>
 <?php /* Nr. 36 b: die Ansage (Ausgabeart, Erreichbarkeit, letzte Ansage). */
-list($dk_ast, $dk_atext) = dk_pruefe_ansage($dk_cfg); ?>
+// D22 (1.3.19): die Erreichbarkeit nur bei ausdruecklich angefordertem Reiter Test (?form=test).
+list($dk_ast, $dk_atext) = dk_pruefe_ansage($dk_cfg, $dk_tab === 'tab-test'); ?>
 <tr><td><?= dk_e(dk_t('DURCHSAGE.PRUEF')) ?></td>
 	<td<?= $dk_ast === 1 ? ' class="sm-an"' : ($dk_ast === 0 ? ' class="sm-aus"' : '') ?>><?= $dk_ast === 1 ? '&#10003; ' : ($dk_ast === 0 ? '&#10007; ' : '&mdash; ') ?><?= $dk_atext ?></td></tr>
 <?php
@@ -1889,6 +2155,9 @@ $dk_mangel = substr_count($dk_testtabelle, 'sm-aus">&#10007;');
 <span><i class="sm-punkt sm-b-aktion"></i> <?= dk_e(dk_t('LEGENDE.AKTION')) ?></span>
 </div>
 
+<?php if (!dk_endpunkt_an($dk_cfg)) { /* N7 (1.3.19): HTTP-Weg aus - keine Knoepfe, die nur 403 bekaemen. */ ?>
+<div class="sm-grau"><?= dk_t('TEST.EP_AUS') ?></div>
+<?php } else { ?>
 <h3><?= dk_e(dk_t('TEST.G_LESEN')) ?></h3>
 <div class="sm-knopfreihe">
 	<a data-role="none" class="sm-btn sm-b-lesen" target="_blank" href="<?= dk_e($dk_basis) ?>&amp;aktion=status"><?= dk_e(dk_t('TEST.B_STATUS')) ?></a>
@@ -1907,6 +2176,7 @@ $dk_mangel = substr_count($dk_testtabelle, 'sm-aus">&#10007;');
 </div>
 <p class="sm-hilfe"><?= dk_t('TEST.H_OHNETOKEN') ?></p>
 <p class="sm-hilfe"><?= dk_t('TEST.H_EP_NEU') ?></p>
+<?php } ?>
 
 <?php /* Das Protokoll eines beliebigen Containers - rein lesend, im
 	   * angemeldeten Bereich. Bis 1.2.4 gab es das nur fuer Portainer,
@@ -2009,6 +2279,14 @@ if ($dk_cronerr) { ?>
 <div class="sm-warnung"><?= sprintf(dk_t('LOG.CRONERR'), dk_e($dk_p['cronerr'])) ?></div>
 <pre class="sm-pre"><?= dk_e(implode("\n", $dk_cronerr)) ?></pre>
 <?php } ?>
+<?php
+/* D21 (1.3.19): Laufzeitfehler des Hintergrundvorgangs (Portainer aktualisieren) wie cron.err - nur, wenn etwas
+ * darin steht; die Datei kappt bin/dk_vorgang.php selbst. */
+$dk_vorgangerr = dk_log_ende($dk_p['vorgangerr'], 20);
+if ($dk_vorgangerr) { ?>
+<div class="sm-warnung"><?= sprintf(dk_t('LOG.VORGANGERR'), dk_e($dk_p['vorgangerr'])) ?></div>
+<pre class="sm-pre"><?= dk_e(implode("\n", $dk_vorgangerr)) ?></pre>
+<?php } ?>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?= dk_t('LEGENDE.AKTION_LOG') ?></span>
 </div>
@@ -2034,7 +2312,23 @@ if ($dk_cronerr) { ?>
 		if (history.replaceState) { history.replaceState(null, '', 'index.php?form=' + id.replace('tab-', '')); }
 	}
 	reiter.forEach(function (r) {
-		r.addEventListener('click', function (e) { e.preventDefault(); zeige(r.dataset.ziel); });
+		/* D22 (1.3.19): der Reiter Test ist ein echter Seitenwechsel (?form=test) - nur dann fragt die Pruefzeile der
+		 * Ansage die Erreichbarkeit; per Umschalten saehe man sonst nur einen Strich. */
+		r.addEventListener('click', function (e) {
+			if (r.dataset.ziel === 'tab-test') { return; }
+			e.preventDefault(); zeige(r.dataset.ziel);
+		});
+	});
+	// Namenstabelle und Befehlszeilen (1.3.19): in die Zwischenablage; ohne Zwischenablage ueber ein Textfeld.
+	document.querySelectorAll('.sm-kopie').forEach(function (k) {
+		k.addEventListener('click', function () {
+			var n = k.getAttribute('data-name');
+			if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(n); return; }
+			var f = document.createElement('textarea');
+			f.value = n; document.body.appendChild(f); f.select();
+			try { document.execCommand('copy'); } catch (x) { /* nichts */ }
+			document.body.removeChild(f);
+		});
 	});
 	zeige(<?= json_encode($dk_tab) ?>);
 })();

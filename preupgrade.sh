@@ -18,16 +18,28 @@
 # Bewusst NICHT /tmp: das ist auf dem LoxBerry eine Ramdisk und ausserdem fuer
 # jeden lesbar. In der Datei steht ein Geheimnis.
 
-ARGV3=$3
-ARGV5=$5
-PFOLDER="${ARGV3:-dockerng}"
-BASE="${ARGV5:-$LBHOMEDIR}"
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    # Ableitung aus dem eigenen Ablageort. LoxBerry::System taugt hier nicht:
-    # es leitet den Pluginordner aus dem Aufrufort ab und liefert von hier aus
-    # ueberall Leerstring.
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+# Abbruch mit Rueckgabe 2: plugininstall.pl bricht das Update dann ab, die bisherige Fassung bleibt.
+# D2/D15 (1.3.19, Hausform Ultraschall 1.2.18 us_ist_wurzel): Wurzel ist, was config/plugins UND data/plugins UND
+# config/system/general.json traegt (Regeln/06) - gefragt werden $5 (kommt vom Installer immer) und LBHOMEDIR. Bis
+# 1.3.18 stand hier ein Rueckfall $SELF/../.. - die Skripte laufen aus dem Arbeitsordner des Installers, zwei Ebenen
+# darueber liegt keine Wurzel (toter, falsch berechneter Zweig). Ohne Wurzel wird abgebrochen, ohne etwas anzufassen;
+# ein unbrauchbarer Ordnername faellt nie still auf 'dockerng' zurueck.
+dk_ist_wurzel() {
+    [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ] \
+        && [ -f "$1/config/system/general.json" ]
+}
+PFOLDER="${3:-}"
+case "$PFOLDER" in
+    ''|*[!A-Za-z0-9_-]*) echo "<FAIL> Ordnername '$PFOLDER' unbrauchbar - es wird nichts angefasst."; exit 2 ;;
+esac
+BASE=""
+for dk_k in "${5:-}" "${LBHOMEDIR:-}"; do
+    if dk_ist_wurzel "$dk_k"; then BASE="$dk_k"; break; fi
+done
+if [ -z "$BASE" ]; then
+    echo "<FAIL> Keine LoxBerry-Wurzel (Argument 5: '${5:-}', LBHOMEDIR: '${LBHOMEDIR:-}') - verlangt sind"
+    echo "<FAIL> config/plugins, data/plugins und config/system/general.json. Es wird nichts angefasst."
+    exit 2
 fi
 
 # ---------- Upgrade-Marke, ALS ERSTES (I1, Entscheidung 1) ----------
@@ -35,14 +47,20 @@ fi
 # als Neuinstallation, und liegengebliebene Zweitschriften gehen nach .alt).
 # Der Minutentakt ruht, solange sie liegt; postinstall.sh raeumt sie ab. Sie
 # liegt NEBEN dem Datenordner, sonst loescht purge_installation sie mit.
-case "$PFOLDER" in ''|*/*|*..*) PFOLDER=dockerng ;; esac
-if [ -n "$BASE" ] && [ -d "$BASE/data/plugins" ]; then
+if [ -d "$BASE/data/plugins" ]; then
     if date +%s > "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" 2>/dev/null; then
         echo "<INFO> Upgrade-Marke gesetzt: $BASE/data/plugins/$PFOLDER.upgrade_laeuft"
     else
         echo "<WARNING> Die Upgrade-Marke liess sich nicht anlegen. postinstall.sh haelt die"
         echo "<WARNING> Aktualisierung dann fuer eine Neuinstallation und spielt nichts zurueck."
     fi
+fi
+
+# V3 (1.3.19): die Befehlsbruecke vor dem Austausch der Dateien anhalten. Die Marke liegt schon - der Waechter im
+# Minutentakt startet sie bis postinstall.sh nicht neu. Bis 1.3.18 gab es keine Bruecke (dann fehlt die Datei).
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    echo "<INFO> Befehlsbruecke: $(timeout 40 bash "$BBSH" stop 2>&1 | head -n 1)"
 fi
 
 CF="$BASE/config/plugins/$PFOLDER/dockerng.json"
@@ -129,7 +147,14 @@ if [ "$TAUGT" = "1" ]; then
         if [ -n "$NEU" ]; then
             echo "<INFO> Neue Einstellungen dieser Fassung, die Ihre Konfiguration noch nicht kennt: $NEU"
             echo "<INFO> Der Minutentakt traegt sie mit ihrer Vorgabe ein (eine Zeile im Protokoll)."
-            echo "<INFO> Alle neuen Funktionen sind ab Werk AUS - die Aktualisierung aendert daran nichts."
+            echo "<INFO> Fuer diese bestehende Anlage sind alle neuen Funktionen ab Werk AUS bzw. unveraendert (der"
+            echo "<INFO> HTTP-Endpunkt bleibt an) - die Aktualisierung aendert daran nichts. Nur Neuinstallationen"
+            echo "<INFO> senden ab 1.3.19 ab Werk ueber MQTT."
+        fi
+        # E-E3 (1.3.19): ist MQTT in dieser Anlage aus (oder der Schluessel fehlt - Stand vor 1.3.0), ein Hinweis.
+        if [ "$(php -r '$d=json_decode(file_get_contents($argv[1]),true); echo (is_array($d)&&!empty($d["mqtt_aktiv"]))?"1":"0";' "$CF" 2>/dev/null)" = "0" ]; then
+            echo "<INFO> MQTT ist in dieser Anlage aus. Neue Anlagen senden ab 1.3.19 ab Werk ueber MQTT - einschalten im"
+            echo "<INFO> Reiter MQTT (empfohlen; der HTTP-Weg bleibt)."
         fi
         if [ -n "$ALT" ]; then
             echo "<INFO> Entfaellt in dieser Fassung: $ALT. Den eigenen Portainer erkennt das Plugin"

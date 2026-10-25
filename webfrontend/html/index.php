@@ -33,6 +33,14 @@ dk_zeitgrenze(8);
  * unbrauchbar, liest dk_config(false) die Zweitschrift nur, damit die
  * Adressen im Miniserver weiter tragen. */
 $dk_cfg  = dk_config(false);
+/* Seit 1.3.19 (Entscheidung 2, Entwurf 3.2): der HTTP-Endpunkt ist der alte Weg und antwortet nur mit dem Haken
+ * "HTTP-Endpunkt fuer Loxone annehmen" (endpunkt_ein = 1; Neuinstallation 0, Update 1). Geprueft VOR dem Token -
+ * so verraet auch ein falsches Token nichts. Fuer alle Aktionen und den Selbsttest; kein Protokoll, kein Heilen. */
+if (!dk_endpunkt_an($dk_cfg)) {
+    http_response_code(403);
+    echo ((isset($_GET['selftest']) && $_GET['selftest'] === '1') ? 'SELFTEST' : 'DOCKERNG') . ";OK=0;ERR=ENDPUNKT_AUS\n";
+    exit;
+}
 $dk_soll = is_string($dk_cfg['aktionstoken']) ? $dk_cfg['aktionstoken'] : '';
 
 /* Der Parameter wird ZUERST auf seinen Typ geprueft.
@@ -296,4 +304,11 @@ foreach ($dk_z['wache'] as $dk_name => $dk_wert) {
 /* TAKTALTER steht HINTEN (C4, Regeln/07: neue Felder hinten) - hinter den
  * Stellen je Container, damit keine bestehende Befehlserkennung verrutscht. */
 $dk_zeile .= ';TAKTALTER=' . (int) $dk_alter;
+/* V2 (1.3.19, E-E15): je ueberwachtem Container OOM - 1 = zuletzt vom System wegen Speichermangel beendet, 0 = nein,
+ * -1 = Container fehlt. Neue Felder hinten (Regeln/07), hinter TAKTALTER; die Kongruenzprobe liest diese
+ * Anhaengezeilen mit (D20). */
+foreach ($dk_z['wache'] as $dk_name => $dk_wert) {
+    $dk_o = isset($dk_nach[$dk_name]) ? (int) $dk_nach[$dk_name]['oom'] : -1;
+    $dk_zeile .= ';O_' . preg_replace('/[^A-Za-z0-9_]/', '_', $dk_name) . '=' . $dk_o;
+}
 echo $dk_zeile . "\n";

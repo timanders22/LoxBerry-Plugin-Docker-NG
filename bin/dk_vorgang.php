@@ -48,8 +48,17 @@ if (is_file($dk_p['home'] . '/libs/phplib/loxberry_system.php')) {
 /* Laufzeitfehler in eine Datei, nicht auf die Fehlerausgabe: die geht beim
  * Start nach /dev/null (Regeln/03, "dritte Protokollart"). */
 if (!@is_dir($dk_p['logdir'])) { @mkdir($dk_p['logdir'], 0775, true); }
+/* D21 (1.3.19): vor dem Umlenken kappen wie cron/cron.01min mit cron.err - log/ liegt im Arbeitsspeicher. Ueber 256 kB
+ * bleiben die letzten 300 Zeilen (Nebendatei + rename). Der Reiter Logdateien zeigt die Datei, wenn etwas darin steht. */
+clearstatcache(true, $dk_p['vorgangerr']);
+if (@is_file($dk_p['vorgangerr']) && @filesize($dk_p['vorgangerr']) > 262144) {
+    $dk_rest = array_slice(@file($dk_p['vorgangerr'], FILE_IGNORE_NEW_LINES) ?: array(), -300);
+    if (@file_put_contents($dk_p['vorgangerr'] . '.neu', implode("\n", $dk_rest) . "\n") !== false) {
+        @rename($dk_p['vorgangerr'] . '.neu', $dk_p['vorgangerr']);
+    }
+}
 ini_set('log_errors', '1');
-ini_set('error_log', $dk_p['logdir'] . '/vorgang.err');
+ini_set('error_log', $dk_p['vorgangerr']);
 
 $dk_auftrag = isset($argv[1]) ? (string) $argv[1] : '';
 if (!in_array($dk_auftrag, array('aktualisieren', 'label'), true) || count($argv) !== 2) {

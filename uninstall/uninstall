@@ -11,14 +11,27 @@
 # mitreisst, ist gefaehrlicher als eines, das etwas stehen laesst. Der Befehl
 # dafuer steht unten, auszufuehren bleibt Sache des Anwenders.
 
-PFOLDER="${3:-dockerng}"
-BASE="${5:-$LBHOMEDIR}"
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+# D2/D15 (1.3.19): Wurzel in Hausform; Rueckfall DREI Ebenen vom Ablageort data/system/uninstall/<name> (Regeln/06;
+# bis 1.3.18 zwei - das traf data/). Keine Wurzel oder ein unbrauchbarer Ordnername: es wird NICHTS geloescht und
+# nichts beendet (Rueckgabe 0 - die Deinstallation des Plugins selbst laeuft weiter).
+dk_ist_wurzel() {
+    [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ] \
+        && [ -f "$1/config/system/general.json" ]
+}
+PFOLDER="${3:-}"
+case "$PFOLDER" in
+    ''|*[!A-Za-z0-9_-]*) echo "<FAIL> Ordnername '$PFOLDER' unbrauchbar - es wird NICHTS beendet und NICHTS geloescht."; exit 0 ;;
+esac
+BASE=""
+for dk_k in "${5:-}" "${LBHOMEDIR:-}" "$(cd "$(dirname "$(readlink -f "$0")")/../../.." 2>/dev/null && pwd)"; do
+    if dk_ist_wurzel "$dk_k"; then BASE="$dk_k"; break; fi
+done
+if [ -z "$BASE" ]; then
+    echo "<FAIL> Keine LoxBerry-Wurzel gefunden (config/plugins, data/plugins und config/system/general.json) - es"
+    echo "<FAIL> wurde NICHTS geloescht. Bitte von Hand nachsehen: config/plugins/$PFOLDER.backup.json,"
+    echo "<FAIL> data/plugins/$PFOLDER.upgrade_laeuft, data/plugins/$PFOLDER.mqtt_*.json"
+    exit 0
 fi
-
-case "$PFOLDER" in ''|*[!A-Za-z0-9_]*) PFOLDER=dockerng ;; esac
 CF="$BASE/config/plugins/$PFOLDER/dockerng.json"
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 BINDIR="$BASE/bin/plugins/$PFOLDER"
@@ -35,6 +48,50 @@ dk_frist() {
         "$@"
     fi
 }
+
+# ---------- Befehlsbruecke anhalten (V3, 1.3.19; Bauart Ferien 1.2.28 uninstall) ----------
+# stop beendet Dienst und mosquitto_sub, auch ein verwaistes; danach argumentweise nachzaehlen, die Optionsdateien mit
+# dem Broker-Kennwort ueberschreiben und den Ordner befehle/ entfernen. Im Broker bleibt nichts: Quittungen und
+# status/befehle sind nie zurueckbehalten.
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+BBPHP="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.php"
+BBDIR="$BASE/data/plugins/$PFOLDER/befehle"
+if [ -f "$BBSH" ]; then
+    timeout 40 bash "$BBSH" stop
+fi
+BB_REST=0
+for d in /proc/[0-9]*; do
+    mapfile -d '' -t a 2>/dev/null < "$d/cmdline" || continue
+    if [ "${#a[@]}" -eq 2 ] && [ "${a[1]}" = "$BBPHP" ] && [[ "${a[0]}" =~ (^|/)php[0-9.]*$ ]]; then
+        kill -9 "${d#/proc/}" 2>/dev/null
+        BB_REST=$((BB_REST + 1))
+    fi
+done
+BB_ABOS=0
+for d in /proc/[0-9]*; do
+    read -r c 2>/dev/null < "$d/comm" || continue
+    [ "$c" = "mosquitto_sub" ] || continue
+    mapfile -d '' -t e 2>/dev/null < "$d/environ" || continue
+    for x in "${e[@]}"; do
+        if [ "$x" = "XDG_CONFIG_HOME=$BBDIR/mosquitto" ]; then kill -9 "${d#/proc/}" 2>/dev/null; BB_ABOS=$((BB_ABOS + 1)); fi
+    done
+done
+[ "$BB_REST" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $BB_REST Dienst(e) erst mit kill -9 beendet."
+[ "$BB_ABOS" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $BB_ABOS mosquitto_sub erst mit kill -9 beendet."
+if [ -d "$BBDIR" ]; then
+    for f in "$BBDIR/mosquitto/mosquitto_sub" "$BBDIR/mosquitto/mosquitto_pub"; do
+        if [ -f "$f" ]; then
+            n=$(stat -c %s "$f" 2>/dev/null || echo 64)
+            head -c "$n" /dev/zero > "$f" 2>/dev/null
+        fi
+    done
+    rm -rf "${BBDIR:?}"
+fi
+if [ -e "$BBDIR/mosquitto/mosquitto_sub" ] || [ -e "$BBDIR/mosquitto/mosquitto_pub" ]; then
+    echo "<WARNING> Befehlsbruecke: Optionsdateien liegen noch unter $BBDIR/mosquitto - von Hand entfernen."
+elif [ -f "$BBSH" ]; then
+    echo "<OK> Befehlsbruecke angehalten, ihre Zugangsdaten entfernt."
+fi
 
 # ---------- Den EIGENEN Container anhalten und entfernen (C1, Entscheidung 9) ----------
 # BERICHTIGT in 1.3.9: bis dahin entfernte dieses Skript den Container, den das
@@ -119,18 +176,17 @@ else
 fi
 
 # ---------- Zurueckbehaltene MQTT-Themen abraeumen (M4, Entscheidung 3) ----------
-# Nur eigene Themen unter dem eingestellten Praefix und was zum Abraeumen
-# vorgemerkt war - mit leerer retain-Nutzlast ueber den UDP-Eingang des
-# Gateways. Muss VOR dem Entfernen der Konfiguration laufen (sie traegt das
-# Praefix). Protokolliert nichts (laeuft als root).
+# Nur eigene Themen unter dem eingestellten Praefix (seit 1.3.19 auch Wachliste, Gedaechtnis und die aktuellen
+# Container, D11) und was zum Abraeumen vorgemerkt war - seit 1.3.19 in einer kurzen TCP-Sitzung mit Ruecklesen
+# (E-E8), ohne Brokerzugang ueber den UDP-Eingang. Muss VOR dem Entfernen der Konfiguration laufen (sie traegt das
+# Praefix). Protokolliert nichts (laeuft als root). Die Zeilen tragen ihre Kennung selbst; Rueckgabe immer 0.
 if [ -f "$BINDIR/dockerng_takt.php" ] && command -v php >/dev/null 2>&1; then
     MAUS=$(dk_frist 60 php "$BINDIR/dockerng_takt.php" --mqtt-leeren 2>&1)
     MRC=$?
-    if [ "$MRC" = "0" ]; then
-        echo "<OK> $MAUS"
-    else
-        echo "<INFO> $MAUS (Rueckgabewert $MRC). Pruefen mit dem MQTT-Finder von LoxBerry."
-    fi
+    case "$MAUS" in
+        "<"*) echo "$MAUS" ;;
+        *) echo "<INFO> MQTT: ${MAUS:-keine Ausgabe} (Rueckgabewert $MRC). Pruefen mit dem MQTT-Finder von LoxBerry." ;;
+    esac
 fi
 
 # ---------- Geheimnis wegraeumen ----------
@@ -155,9 +211,13 @@ for DATEI in "$BK" "$CF" "$BASE/config/plugins/$PFOLDER/setup_token" \
     fi
 done
 # Upgrade-Marke (I1) und Sperrdateien neben dem Datenordner (I7, C9).
+# Seit 1.3.19 (E-E7) dazu das MQTT-Gedaechtnis und die Vormerkung neben dem Datenordner - erst hier, NACH
+# --mqtt-leeren, das sie liest.
 for DATEI in "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" \
              "$BASE/data/plugins/$PFOLDER.cron.lock" \
-             "$BASE/data/plugins/$PFOLDER.takt.lock"; do
+             "$BASE/data/plugins/$PFOLDER.takt.lock" \
+             "$BASE/data/plugins/$PFOLDER.mqtt_gedaechtnis.json" \
+             "$BASE/data/plugins/$PFOLDER.mqtt_abraeumen.json"; do
     if [ -f "$DATEI" ]; then
         rm -f "$DATEI" && echo "<OK> $DATEI entfernt."
     fi

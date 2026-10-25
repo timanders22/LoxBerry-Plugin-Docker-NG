@@ -36,15 +36,37 @@ PVERSION=$4   # Forth argument is Plugin version
               # Base folder of LoxBerry
 PTEMPPATH=$6  # Sixth argument is full temp path during install (see also $1)
 
-# Combine them with /etc/environment
-PCGI=$LBPCGI/$PDIR
-PHTML=$LBPHTML/$PDIR
-PTEMPL=$LBPTEMPL/$PDIR
-PDATA=$LBPDATA/$PDIR
-PLOG=$LBPLOG/$PDIR # Note! This is stored on a Ramdisk now!
-PCONFIG=$LBPCONFIG/$PDIR
-PSBIN=$LBPSBIN/$PDIR
-PBIN=$LBPBIN/$PDIR
+# D2/D15 (1.3.19, Hausform Ultraschall 1.2.18 us_ist_wurzel): Wurzel ist, was config/plugins UND data/plugins UND
+# config/system/general.json traegt (Regeln/06) - gefragt werden $5 (kommt vom Installer immer) und LBHOMEDIR. Bis
+# 1.3.18 stand hier ein Rueckfall $SELF/../.. - die Skripte laufen aus dem Arbeitsordner des Installers, zwei Ebenen
+# darueber liegt keine Wurzel (toter, falsch berechneter Zweig). Ohne Wurzel wird abgebrochen, ohne etwas anzufassen;
+# ein unbrauchbarer Ordnername faellt nie still auf 'dockerng' zurueck.
+dk_ist_wurzel() {
+    [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ] \
+        && [ -f "$1/config/system/general.json" ]
+}
+# D2/D15 (1.3.19): die Pfade aus $5 (bzw. LBHOMEDIR), nicht mehr aus $LBPCONFIG/$LBPBIN der Umgebung - bei leerer
+# Umgebung entstand bis 1.3.18 /dockerng.
+case "$PDIR" in
+    ''|*[!A-Za-z0-9_-]*) echo "<FAIL> Ordnername '$PDIR' unbrauchbar - es wird nichts eingerichtet."; exit 1 ;;
+esac
+BASE=""
+for dk_k in "${5:-}" "${LBHOMEDIR:-}"; do
+    if dk_ist_wurzel "$dk_k"; then BASE="$dk_k"; break; fi
+done
+if [ -z "$BASE" ]; then
+    echo "<FAIL> Keine LoxBerry-Wurzel (Argument 5: '${5:-}', LBHOMEDIR: '${LBHOMEDIR:-}') - verlangt sind"
+    echo "<FAIL> config/plugins, data/plugins und config/system/general.json. Es wird nichts eingerichtet."
+    exit 1
+fi
+PCGI=$BASE/webfrontend/htmlauth/plugins/$PDIR
+PHTML=$BASE/webfrontend/html/plugins/$PDIR
+PTEMPL=$BASE/templates/plugins/$PDIR
+PDATA=$BASE/data/plugins/$PDIR
+PLOG=$BASE/log/plugins/$PDIR # Note! This is stored on a Ramdisk now!
+PCONFIG=$BASE/config/plugins/$PDIR
+PSBIN=$BASE/sbin/plugins/$PDIR
+PBIN=$BASE/bin/plugins/$PDIR
 
 echo -n "<INFO> Current working folder is: "
 pwd
@@ -637,6 +659,27 @@ else
 			"KONFIG 1 ZWEIT 0") echo "<WARNING> Eingetragen in die Konfiguration: HTTP $HTTP_PORT, HTTPS $HTTPS_PORT (eine Zweitschrift entsteht mit dem ersten Merkwort)." ;;
 			*) echo "<FAIL> Die benutzten Ports liessen sich NICHT in die Konfiguration eintragen - die Plugin-Seite liest sie am Container ab." ;;
 		esac
+	fi
+fi
+
+# ---------- D1 (1.3.19, E-E20): der erste Takt mit Docker ----------
+# Bei der Erstinstallation lief der Takt in postinstall.sh ohne Docker (hier wurde es erst eingerichtet). Erkannt
+# wird sie an zustand.json: fehlt oder traegt "ok": 0 (beim Upgrade steht dort "ok": 1 - kein Doppellauf; postroot
+# kennt $isupgrade nicht). Nur, wenn Docker jetzt als loxberry antwortet. Ausgabe wie postinstall.sh.
+ZD="$PDATA/zustand.json"
+if [ -f "$PBIN/dockerng_takt.php" ] && { [ ! -f "$ZD" ] || grep -q '"ok": 0' "$ZD" 2>/dev/null; }; then
+	if su -s /bin/sh loxberry -c 'docker ps -q' >/dev/null 2>&1
+	then
+		su -s /bin/sh loxberry -c "cd '$PBIN' && php dockerng_takt.php --einmal" >/dev/null 2>&1
+		TRC=$?
+		case "$TRC" in
+			0) echo "<OK> Der Minutentakt ist einmal mit Docker durchgelaufen (Zustandsdatei geschrieben)." ;;
+			3) echo "<INFO> Der Minutentakt lief gerade aus dem Cron - er wurde nicht doppelt ausgefuehrt." ;;
+			*) echo "<INFO> Der Minutentakt endete mit Rueckgabewert $TRC - der Cron versucht es jede Minute erneut." ;;
+		esac
+	else
+		echo "<INFO> Docker antwortet dem Benutzer loxberry noch nicht - der erste Takt mit Docker folgt aus dem Cron"
+		echo "<INFO> (nach dem empfohlenen Neustart des LoxBerry sicher)."
 	fi
 fi
 

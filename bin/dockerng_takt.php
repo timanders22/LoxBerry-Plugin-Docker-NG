@@ -79,19 +79,46 @@ foreach ($argv as $dk_i => $dk_a) {
  * als root. Leert die eigenen zurueckbehaltenen Themen unter dem
  * eingestellten Praefix und alles, was zum Abraeumen vorgemerkt ist.
  * Protokolliert NICHTS - eine Zeile von hier legte die Protokolldatei
- * root-eigen an (Installer-Pruefer J4). */
+ * root-eigen an (Installer-Pruefer J4).
+ * SEIT 1.3.19 (E-E8, D11): in einer kurzen TCP-Sitzung mit Ruecklesen (auch Wachliste, Gedaechtnis und die
+ * aktuellen Container); die Zeilen tragen ihre Kennung selbst (<OK>, <INFO>, <WARNING>), Rueckgabe immer 0 -
+ * die Deinstallation laeuft weiter. */
 if (in_array('--mqtt-leeren', $argv, true)) {
     dk_log_aus(true);
     dk_zeitgrenze(10);
-    list($dk_n, $dk_f) = dk_mqtt_leeren_alles();
-    echo 'MQTT: ' . $dk_n . ' zurueckbehaltene Themen geleert'
-        . ($dk_f ? ', davon ' . $dk_f . ' nicht abgesetzt' : '') . "\n";
-    exit($dk_f ? 1 : 0);
+    list($dk_lage, $dk_n, $dk_offen) = dk_mqtt_leeren_alles();
+    if ($dk_lage === 'geleert') {
+        echo '<OK> MQTT: ' . $dk_n . " Themen geleert (Ruecklesen leer).\n";
+    } elseif ($dk_lage === 'nichts') {
+        echo '<INFO> MQTT: nichts zu leeren (der Broker haelt keines der ' . $dk_n . " Themen zurueck).\n";
+    } elseif ($dk_lage === 'rest') {
+        echo '<WARNING> MQTT: noch zurueckbehalten - bitte von Hand leeren: ' . implode(', ', $dk_offen)
+            . " (mosquitto_pub -r -n -t <thema>)\n";
+    } else {
+        echo '<WARNING> MQTT: der Broker war nicht erreichbar - ' . $dk_n . ' Themen ueber den UDP-Eingang geleert'
+            . ($dk_offen ? ', davon ' . count($dk_offen) . ' nicht abgesetzt' : '')
+            . " (ohne Ruecklesen; pruefen mit dem MQTT-Finder).\n";
+    }
+    exit(0);
 }
 
 $dk_laut = in_array('--einmal', $argv, true);
 
 $dk_e = dk_takt();
+
+/* V3 (1.3.19, E-E9): der Waechter der Befehlsbruecke laeuft in diesem Minutentakt (bb_waechter() der Stammfassung
+ * 1.0.1; Hausform Ferien cron.php). Er misst das Erzeugnis (zustand.json hoechstens 180 s alt), startet hoechstens
+ * alle 600 s, nie waehrend eines Updates (frische Marke), haelt die Bruecke bei Haken aus an und sendet
+ * <praefix>/status/befehle (1/0/-1, nie retained). Ausserhalb von dk_takt(), das seine Sperre takt.lock haelt; die
+ * Cron-Sperre (fd 9) erbt der Dienst nicht - befehlsbruecke.sh schliesst geerbte Deskriptoren. Nicht im Zweig
+ * --mqtt-leeren. Ein Fehler haelt den Takt nicht an. */
+if (dk_bruecke_laden()) {
+    try {
+        bb_waechter();
+    } catch (Throwable $dk_bt) {
+        dk_log_gebremst('bruecke', 'Waechter der Befehlsbruecke: ' . get_class($dk_bt) . ': ' . $dk_bt->getMessage());
+    }
+}
 
 /* Rueckgabewert (C7, C9): 0 gelaufen und geschrieben, 3 besetzt (ein
  * anderer Takt laeuft gerade), 1 gescheitert. Bis 1.3.9 endete der Takt

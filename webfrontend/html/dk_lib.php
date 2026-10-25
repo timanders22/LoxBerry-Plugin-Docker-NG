@@ -25,7 +25,9 @@
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
+ * config/plugins UND data/plugins enthaelt UND config/system/general.json
+ * traegt (Regeln/06; seit 1.3.19, D9 - bis 1.3.18 genuegten config/plugins und
+ * webfrontend, und ein fremder Baum mit diesen beiden Ordnern galt als LoxBerry). Das trifft die uebliche
  * Installation genauso wie eine an einem anderen Ort - und es trifft auch
  * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
  * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
@@ -39,7 +41,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/data/plugins')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -56,64 +59,90 @@ require_once __DIR__ . '/sprachausgabe.php';
 
 function dk_paths()
 {
-    static $p = null;
-    if ($p !== null) { return $p; }
-
-    $home = getenv('LBHOMEDIR');
-    if (!$home || !is_dir($home)) {
-        foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-            if (is_dir($k)) { $home = $k; break; }
+    /* Gruppe 21 (1.3.19; D9, Entwurf 3.4, Bauart fer_paths() aus Ferien 1.2.28):
+     *  - Wurzel = LBHOMEDIR (mit config/plugins und data/plugins), sonst lb_wurzel_ermitteln() (streng, mit
+     *    config/system/general.json). Der Rueckfall /home/loxberry/loxberry ist gestrichen - so liegt kein LoxBerry.
+     *  - Archivschutz: Pfade der Anlage nur, wenn diese Datei wirklich unter <wurzel>/webfrontend/html/plugins/<ordner>/
+     *    liegt (installiert; Ordner = basename(__DIR__)) ODER LBHOMEDIR und ein gueltiges LBPPLUGINDIR ausdruecklich
+     *    gesetzt sind (Pruefstaende, Freigabetor). Sonst Ersatzpfade unter <temp>/dockerng-archiv - bis 1.3.18 schrieb
+     *    ein Takt aus einem entpackten Archiv unter <wurzel>/tmp in die Anlage (Pruefbericht, Probe d9).
+     *  - Ein falscher Ordnername faellt nie still auf 'dockerng' zurueck (bis 1.3.18 :76-81).
+     *  - Neu: 'general', 'mqtt_gedaechtnis' und 'abraeumen' NEBEN dem Datenordner (E1, E-E7: purge_installation
+     *    loescht data/plugins/<ordner>/ bei jedem Upgrade), 'abraeumen_alt' (Ort bis 1.3.18, einmaliger Umzug),
+     *    'neustart_sperre' (V3, E-E4), 'vorgangerr' (D21).
+     * Ergebnis je Prozess gemerkt, Schluessel = LBHOMEDIR und LBPPLUGINDIR. Am Geraet aendert sich kein Pfad. */
+    static $merk = array();
+    $env_home = (string) getenv('LBHOMEDIR');
+    $env_ordner = (string) getenv('LBPPLUGINDIR');
+    $schluessel = $env_home . "\n" . $env_ordner;
+    if (isset($merk[$schluessel])) { return $merk[$schluessel]; }
+    $nie = array('', '.', '..', '/', 'html', 'htmlauth', 'bin', 'plugins', 'webfrontend');
+    $env_home = rtrim($env_home, '/');
+    $home_ok = ($env_home !== '' && is_dir($env_home . '/config/plugins') && is_dir($env_home . '/data/plugins'));
+    $wurzel = $home_ok ? $env_home : lb_wurzel_ermitteln();
+    $self = basename(__DIR__);
+    $ausdruecklich = basename(rtrim($env_ordner, '/'));
+    $ordner = '';
+    if ($wurzel !== '') {
+        $inst = @realpath($wurzel . '/webfrontend/html/plugins/' . $self);
+        $hier = @realpath(__DIR__);
+        if (!in_array($self, $nie, true) && $inst !== false && $hier !== false && $inst === $hier) {
+            $ordner = $self;
+        } elseif ($home_ok && !in_array($ausdruecklich, $nie, true)
+                  && preg_match('/^[A-Za-z0-9_\-]{1,64}\z/', $ausdruecklich)) {
+            $ordner = $ausdruecklich;
         }
-        if (!$home) { $home = lb_wurzel_ermitteln(); }
     }
-
-    /* Der Ordnername ergibt sich aus dem ABLAGEORT dieser Datei:
-     *   <home>/webfrontend/html/plugins/<ordner>/dk_lib.php
-     * Bis 1.1.0 stand hier fest 'dockerng' - der Kommentar darueber behauptete
-     * schon damals die Ableitung, der Code machte sie nicht. Bei einem Fork
-     * mit anderem Ordnernamen zeigten dann alle Pfade ins Leere.
-     */
-    $ordner = basename(dirname(__FILE__));
-    if (!is_dir($home . '/config/plugins/' . $ordner)) {
-        foreach (array(getenv('LBPPLUGINDIR'), 'dockerng') as $kand) {
-            if ($kand && is_dir($home . '/config/plugins/' . $kand)) { $ordner = $kand; break; }
-        }
+    if ($ordner !== '') {
+        $home = $wurzel;
+        $cfgdir = $home . '/config/plugins/' . $ordner;
+        $logdir = $home . '/log/plugins/' . $ordner;
+        $datadir = $home . '/data/plugins/' . $ordner;
+        $neben = $home . '/data/plugins/' . $ordner;
+        $general = $home . '/config/system/general.json';
+    } else {
+        /* Archivfall: nichts zeigt in eine Anlage. 'home' bleibt leer (dk_melden, dk_plugin_zuordnung und die
+         * Hakenskripte fragen danach), die Sprachdateien sucht dk_t() dann im Archiv. */
+        $a = sys_get_temp_dir() . '/dockerng-archiv';
+        $home = '';
+        $ordner = in_array($self, $nie, true) ? 'dockerng' : $self;
+        $cfgdir = $a . '/config';
+        $logdir = $a . '/log';
+        $datadir = $a . '/data';
+        $neben = $a . '/data';
+        $general = '';
     }
-
-    /* data/ liegt - anders als log/ - NICHT auf der Ramdisk und uebersteht
-     * deshalb einen Neustart. Dorthin gehoert der Zustand, den der Minutentakt
-     * fortschreibt: Herzschlag, Neustartzaehler, Plattenbelegung.
-     *
-     * Bewusst KEINE Zweitschrift daneben: der Installer loescht
-     * data/plugins/<ordner>/ vor jedem postinstall.sh, und alles darin ist neu
-     * erzeugbar. Fuer das Merkwort waere das falsch - deshalb liegt die
-     * Konfiguration weiterhin unter config/ und ihre Sicherung daneben.
-     */
-    $p = array(
+    return $merk[$schluessel] = array(
         'home'      => $home,
         'plugin'    => $ordner,
-        'config'    => $home . '/config/plugins/' . $ordner . '/dockerng.json',
-        'configdir' => $home . '/config/plugins/' . $ordner,
-        'sicherung' => $home . '/config/plugins/' . $ordner . '.backup.json',
-        'logdir'    => $home . '/log/plugins/' . $ordner,
-        'log'       => $home . '/log/plugins/' . $ordner . '/dockerng.log',
+        'config'    => $cfgdir . '/dockerng.json',
+        'configdir' => $cfgdir,
+        'sicherung' => $cfgdir . '.backup.json',
+        'logdir'    => $logdir,
+        'log'       => $logdir . '/dockerng.log',
         // Fehlerausgabe des Minutentakts, umgelenkt in cron/cron.01min.
-        'cronerr'   => $home . '/log/plugins/' . $ordner . '/cron.err',
-        'datadir'   => $home . '/data/plugins/' . $ordner,
-        'zustand'   => $home . '/data/plugins/' . $ordner . '/zustand.json',
-        // Upgrade-Marke (Entscheidung 1, I1): NEBEN dem Datenordner, sonst
-        // loescht purge_installation sie mit. preupgrade.sh legt sie als
-        // Erstes an, postinstall.sh raeumt sie ab.
-        'marke'       => $home . '/data/plugins/' . $ordner . '.upgrade_laeuft',
-        // Zweitschrift des Einrichtungstokens von Portainer (I5), 0600, neben
-        // dem Konfigurationsordner - der Ordner selbst faellt bei jedem Upgrade.
-        'setup_zweit' => $home . '/config/plugins/' . $ordner . '.backup.setup_token',
+        'cronerr'   => $logdir . '/cron.err',
+        // D21 (1.3.19): Laufzeitfehler des Hintergrundvorgangs (bin/dk_vorgang.php).
+        'vorgangerr' => $logdir . '/vorgang.err',
+        'datadir'   => $datadir,
+        'zustand'   => $datadir . '/zustand.json',
+        // Upgrade-Marke (Entscheidung 1, I1): NEBEN dem Datenordner, sonst loescht purge_installation sie mit.
+        // preupgrade.sh legt sie als Erstes an (Inhalt: Unix-Zeit), postinstall.sh raeumt sie ab. Die Befehlsbruecke
+        // liest dieselbe Datei (bb_pfade_aus() 'marke') - nicht umbenennen (N10).
+        'marke'       => $neben . '.upgrade_laeuft',
+        // Zweitschrift des Einrichtungstokens von Portainer (I5), 0600, neben dem Konfigurationsordner.
+        'setup_zweit' => $cfgdir . '.backup.setup_token',
         // Abodatei fuer das MQTT-Gateway V1 (M7). Das Gateway liest sie selbst.
-        'abo'         => $home . '/config/plugins/' . $ordner . '/mqtt_subscriptions.cfg',
-        // Vorgemerkte Themen zum Abraeumen (M4), abgearbeitet vom Minutentakt.
-        'abraeumen'   => $home . '/data/plugins/' . $ordner . '/mqtt_abraeumen.json',
+        'abo'         => $cfgdir . '/mqtt_subscriptions.cfg',
+        // Seit 1.3.19 NEBEN dem Datenordner (E1, E-E7): vorgemerkte Themen zum Abraeumen und das MQTT-Gedaechtnis
+        // (zuletzt gemeldete Container, offene Abraeumungen) ueberstehen ein Upgrade.
+        'abraeumen'   => $neben . '.mqtt_abraeumen.json',
+        'abraeumen_alt' => $datadir . '/mqtt_abraeumen.json',
+        'mqtt_gedaechtnis' => $neben . '.mqtt_gedaechtnis.json',
+        // V3 (1.3.19, E-E4): Zeit des letzten Neustarts je Container (Name => Unix-Zeit).
+        'neustart_sperre' => $datadir . '/neustart_sperre.json',
+        'general'     => $general,
     );
-    return $p;
 }
 
 /* ---------------- Konfiguration ---------------- */
@@ -121,7 +150,8 @@ function dk_paths()
 /**
  * Vorgaben.
  *
- * ALLE in 1.3.0 hinzugekommenen Funktionen stehen ab Werk AUS. Ein
+ * ALLE in 1.3.0 hinzugekommenen Funktionen stehen ab Werk AUS (Ausnahme seit
+ * 1.3.19: MQTT, E-E3 - nur fuer Neuinstallationen, siehe dk_uebergang()). Ein
  * Vorgabewert, der beim ersten Lauf ungefragt schaltet oder ungefragt ins
  * Netz geht, ist ein Fehler - wer aktualisiert, bekommt sonst Verhalten, um
  * das er nicht gebeten hat.
@@ -148,8 +178,10 @@ function dk_vorgaben()
         'aktionstoken'     => '',
         // A1 - Wachliste. Leer = alle Container.
         'wachliste'        => array(),
-        // C1 - MQTT ueber den LoxBerry-Gateway.
-        'mqtt_aktiv'       => 0,
+        /* C1 - MQTT ueber den LoxBerry-Gateway. SEIT 1.3.19 ab Werk AN (E-E3, Hausform): eine Neuinstallation
+         * sendet mit dem ersten Takt. Eine Bestandsdatei traegt den Schluessel seit 1.3.6 und bleibt, wie sie ist;
+         * eine Datei ohne ihn (Stand vor 1.3.0) bekommt ueber dk_uebergang() 0 - nicht diese Vorgabe. */
+        'mqtt_aktiv'       => 1,
         'mqtt_praefix'     => 'dockerng',
         // B3 - Benachrichtigungszentrum von LoxBerry.
         'melden_aktiv'     => 0,
@@ -166,6 +198,15 @@ function dk_vorgaben()
         'ansage_platz'     => 1,
         'ansage_wieder'    => 1,
         'tts'              => ansage_vorgaben('aus'),
+        /* Seit 1.3.19 (Entwurf 2.8). endpunkt_ein: der HTTP-Endpunkt (alter Weg) antwortet nur mit 1 - ab Werk 0,
+         * eine Bestandsanlage bekommt beim Update 1 (dk_uebergang(), postupgrade.sh). befehle_mqtt_ein: Befehle aus
+         * Loxone ueber die Befehlsbruecke annehmen; befehle_mqtt_steuern: der zweite Haken fuer den eingreifenden
+         * Befehl "neustart" (Steuerfreigabe, E-E5); neustart_erlaubt: die Container, die Loxone neu starten darf
+         * (nur Namen der ausdruecklichen Wachliste, E-E6). Alle ab Werk aus bzw. leer. */
+        'endpunkt_ein'     => 0,
+        'befehle_mqtt_ein' => 0,
+        'befehle_mqtt_steuern' => 0,
+        'neustart_erlaubt' => array(),
     );
 }
 
@@ -326,6 +367,18 @@ function dk_wert_pruefen($k, $w)
             $dk_tj = dk_tts(dk_config());
             list($dk_tv) = ansage_vervollstaendigen($dk_tp + $dk_tj);
             return array(true, ansage_sicherung_tokens_behalten($dk_tv, $dk_tj), '');
+        case 'neustart_erlaubt':
+            // Seit 1.3.19 (V3): eine Liste von Containernamen wie die Wachliste.
+            if (!is_array($w)) { return array(false, null, dk_t('FEHLER.NAME')); }
+            $aus = array();
+            foreach ($w as $n) {
+                if (!dk_name_gueltig($n)) { return array(false, null, dk_t('FEHLER.NAME')); }
+                if (!in_array($n, $aus, true)) { $aus[] = $n; }
+            }
+            return array(true, $aus, '');
+        case 'endpunkt_ein':
+        case 'befehle_mqtt_ein':
+        case 'befehle_mqtt_steuern':
         case 'ansage_docker':
         case 'ansage_container':
         case 'ansage_platz':
@@ -360,7 +413,10 @@ function dk_wert_pruefen($k, $w)
  */
 function dk_config_speicher($neu = null)
 {
+    /* Seit 1.3.19 (N1): false setzt den Zwischenspeicher zurueck - fuer dk_config_neu() im dauerhaften Dienst der
+     * Befehlsbruecke, der sonst mit dem Stand seines Starts weiterliefe. */
     static $cfg = null;
+    if ($neu === false) { $cfg = null; return null; }
     if ($neu !== null) { $cfg = $neu; }
     return $cfg;
 }
@@ -399,6 +455,20 @@ function dk_config_normieren($cfg)
     $cfg['mqtt_aktiv']    = !empty($cfg['mqtt_aktiv']) ? 1 : 0;
     $cfg['melden_aktiv']  = !empty($cfg['melden_aktiv']) ? 1 : 0;
     $cfg['updates_aktiv'] = !empty($cfg['updates_aktiv']) ? 1 : 0;
+    // Seit 1.3.19: HTTP-Weg, Befehle aus Loxone, Steuerfreigabe (0/1).
+    $cfg['endpunkt_ein']         = !empty($cfg['endpunkt_ein']) ? 1 : 0;
+    $cfg['befehle_mqtt_ein']     = !empty($cfg['befehle_mqtt_ein']) ? 1 : 0;
+    $cfg['befehle_mqtt_steuern'] = !empty($cfg['befehle_mqtt_steuern']) ? 1 : 0;
+    /* Die Neustartliste (V3, E-E6) wie die Wachliste gesaeubert UND auf Namen der ausdruecklichen Wachliste
+     * beschraenkt: ein Name, der nicht mehr ueberwacht wird, faellt heraus; leere Wachliste (= alle) heisst
+     * keine Neustarts aus Loxone ("nie ohne Eintrag", Entscheidung 3). */
+    $dk_ne = array();
+    foreach ((is_array($cfg['neustart_erlaubt']) ? $cfg['neustart_erlaubt'] : array()) as $w) {
+        if (dk_name_gueltig($w) && in_array($w, $cfg['wachliste'], true) && !in_array($w, $dk_ne, true)) {
+            $dk_ne[] = $w;
+        }
+    }
+    $cfg['neustart_erlaubt'] = $dk_ne;
     // Nr. 36 b: die Anlaesse der Ansage; der Block tts wird vor Gebrauch vervollstaendigt (dk_tts()).
     foreach (dk_ansage_anlaesse() as $dk_ak) { $cfg[$dk_ak] = !empty($cfg[$dk_ak]) ? 1 : 0; }
     if (!is_array($cfg['tts'])) { $cfg['tts'] = ansage_vorgaben('aus'); }
@@ -501,7 +571,9 @@ function dk_config($heilen = true)
     dk_konfig_lage($lage);
 
     $d = json_decode($quelle, true);
-    $gemerkt = dk_config_normieren(is_array($d) ? $d : array());
+    // Seit 1.3.19: Bestandsdatei ohne endpunkt_ein -> 1, ohne mqtt_aktiv -> 0 (dk_uebergang()).
+    $d = dk_uebergang(is_array($d) ? $d : array(), dk_konfig_taugt($quelle));
+    $gemerkt = dk_config_normieren($d);
     dk_config_speicher($gemerkt);
     return $gemerkt;
 }
@@ -552,6 +624,9 @@ function dk_config_vervollstaendigen()
     $roh = @is_file($p['config']) ? @file_get_contents($p['config']) : false;
     if (!dk_konfig_taugt($roh)) { return array(); }
     $datei = json_decode($roh, true);
+    // Seit 1.3.19: dieselbe Lese-Regel wie dk_config() - sonst schriebe der erste Takt die Vorgabe
+    // endpunkt_ein 0 in eine Bestandsdatei, und ihr HTTP-Endpunkt ginge still aus.
+    $datei = dk_uebergang($datei, true);
     $fehlend = array();
     foreach (dk_vorgaben() as $k => $w) {
         if (!array_key_exists($k, $datei)) {
@@ -992,7 +1067,8 @@ function dk_container($frisch = false)
     }
     // Autostart und Neustartzaehler stehen nur in 'docker inspect' - ein
     // einziger weiterer Aufruf fuer ALLE Container, nicht einer je Container.
-    $d = dk_details();
+    // D13 (1.3.19): mit $frisch - bis 1.3.18 kamen Autostart, Neustarts und OOM aus dem alten Stand.
+    $d = dk_details($frisch);
     foreach ($liste as $i => $c) {
         $x = isset($d[$c['name']]) ? $d[$c['name']] : array();
         $liste[$i]['autostart']  = isset($x['autostart']) ? $x['autostart'] : -1;
@@ -1055,9 +1131,18 @@ function dk_plugin_zuordnung($c)
 /** Die Zelle "Plugin" der Containeruebersicht, fertig maskiert (X-5). */
 function dk_plugin_html($c)
 {
+    /* V1 (1.3.19, Entscheidung 3): bei DA mit Oberflaechen-Ordner (htmlauth) ist der Ordnername ein Link auf die
+     * Plugin-Seite, im selben Fenster. Der Ordnername ist gegen ^[A-Za-z0-9_-]{1,64} geprueft (dk_plugin_zuordnung)
+     * und wird trotzdem maskiert; eine andere fremde Eingabe kommt nicht in die Adresse. */
     list($o, $n, $u) = dk_plugin_zuordnung($c);
     if ($u === 'KEINS') { return '&ndash;'; }
     $t = '<span class="sm-mono">' . dk_e($o) . '</span>';
+    if ($u === 'DA') {
+        $p = dk_paths();
+        if ($p['home'] !== '' && @is_dir($p['home'] . '/webfrontend/htmlauth/plugins/' . $o)) {
+            $t = '<a href="/admin/plugins/' . dk_e(rawurlencode($o)) . '/index.php"><span class="sm-mono">' . dk_e($o) . '</span></a>';
+        }
+    }
     if ($n !== '' && $n !== $o) { $t .= ' (' . dk_e($n) . ')'; }
     if ($u === 'DIESES') { return $t . '<br><span class="sm-hilfe">' . dk_e(dk_t('EINST.PLUGIN_DIESES')) . '</span>'; }
     if ($u === 'VERWAIST') { return $t . '<br><span class="sm-aus">' . dk_e(dk_t('EINST.PLUGIN_FEHLT')) . '</span>'; }
@@ -1346,9 +1431,11 @@ function dk_groesse_in_bytes($text)
  * nicht garantiert geladen ist, und ihr Fehlen ist KEIN abfangbarer Fehler,
  * sondern ein fataler. Im Cron sieht den niemand.
  *
- * Es wird ausschliesslich VEROEFFENTLICHT. Auf ein Kommandothema wird bewusst
- * nicht gehoert: das waere der Schaltweg, den dieses Plugin nicht anbietet,
- * und ueber einen Broker waere er schlechter geschuetzt als der Endpunkt.
+ * Dieser Teil VEROEFFENTLICHT nur. Seit 1.3.19 (V3) gibt es EINEN Befehl aus
+ * Loxone - den Neustart eines freigegebenen Containers - und er kommt nicht
+ * hier an, sondern ueber die gemeinsame Befehlsbruecke 1.0.1 (bin/
+ * befehlsbruecke.php, Zuordnung bin/befehle_zuordnung.php): zwei Haken ab
+ * Werk aus, Neustartliste, fester Broker-Schutz, Sperre je Container.
  */
 function dk_mqtt_lage()
 {
@@ -1475,6 +1562,8 @@ function dk_mqtt_retain_tabelle()
         'container/*/laeuft'    => 1,
         'container/*/gesund'    => 1,
         'container/*/stand'     => 1,
+        // V2 (1.3.19): letzte Beendigung durch den Kernel wegen Speichermangel, 0/1, -1 ohne Aussage.
+        'container/*/oom'       => 1,
     );
 }
 
@@ -1497,80 +1586,100 @@ function dk_mqtt_lebenszeichen()
     return array('status/ok', 'status/zaehler', 'status/ts');
 }
 
-/**
- * Der MQTT-Teil des Minutentakts (M1-M6).
- *
- * Merkt sich in zustand.json unter 'mqtt': das Praefix, was zuletzt
- * hinausging (Aenderungsfilter) und welche Container zuletzt gemeldet wurden.
- * Verschwindet ein Container, der NICHT auf der Wachliste steht, geht fuer
- * seine drei Themen EINMAL '-' retained hinaus (M3, Entscheidung 9); danach
- * wird er nicht mehr gesendet. Ein Container der Wachliste meldet weiter
- * -1/fehlt. Antwortet Docker nicht, bleibt das Gedaechtnis der Container
- * unangetastet - nur das Signal geht hinaus (M2).
- */
+/** Der MQTT-Teil des Minutentakts - seit 1.3.19 beschrieben in der Funktion (Entwurf 2.3/2.4). */
 function dk_mqtt_takt($alt, $ok, $z)
 {
+    /* Der MQTT-Teil des Minutentakts (M1-M6; seit 1.3.19 nach Entwurf 2.3/2.4).
+     *  - Vorgemerktes Abraeumen (Praefixwechsel, MQTT aus, Zurueckspielen) zuerst - auch bei MQTT aus.
+     *  - MQTT aus: das Gedaechtnis BLEIBT (D18; bis 1.3.18 kam ein leeres zurueck, und die zuletzt gemeldeten
+     *    Container waren fuer Praefixwechsel und Deinstallation vergessen).
+     *  - Themen nach der -1-Regel (dk_mqtt_themen() mit den zuletzt gemeldeten Containern aus dem Gedaechtnis).
+     *  - Verschwindet ein Container bzw. wird er abgewaehlt (nur bei antwortendem Docker), wird er abgeraeumt:
+     *    kurze TCP-Sitzung mit Ruecklesen (dk_mqtt_weg_abraeumen()), danach der Fehlwert fluechtig ueber UDP.
+     * In zustand.json bleibt unter 'mqtt': Praefix, Aenderungsfilter ('letzte') und der letzte Versand; die Namen
+     * stehen im Gedaechtnis NEBEN dem Datenordner (E1). */
     $cfg = dk_config();
     dk_mqtt_abraeumen_offen();
-    if (empty($cfg['mqtt_aktiv'])) { return array(); }
+    if (empty($cfg['mqtt_aktiv'])) { return is_array($alt) ? $alt : array(); }
     $prae = $cfg['mqtt_praefix'];
     $gleich = is_array($alt) && isset($alt['praefix']) && $alt['praefix'] === $prae;
-    $vorher = ($gleich && isset($alt['container']) && is_array($alt['container'])) ? $alt['container'] : array();
-    $strich = ($gleich && isset($alt['strich']) && is_array($alt['strich'])) ? $alt['strich'] : array();
-    $werte = dk_mqtt_themen();
+    $g = dk_mqtt_gedaechtnis();
+    if ($g['praefix'] !== $prae) {
+        // Ein anderes Praefix: die alten Themen hat die Oberflaeche zum Abraeumen vorgemerkt; hier beginnt es neu.
+        $g = array('praefix' => $prae, 'container' => array(), 'weg' => array(), 'zeit' => 0);
+    }
+    $vorher = $g['container'];
+    $werte = dk_mqtt_themen($vorher);
     $gemeldet = $vorher;
-    $weg = array();
     if ($ok) {
-        $gemeldet = array_keys($z['wache']);
+        $gemeldet = array_values(array_map('strval', array_keys($z['wache'])));
         foreach ($vorher as $n) {
-            if (!is_string($n) || in_array($n, $gemeldet, true)) { continue; }
-            $t = str_replace(array('/', '%'), '_', $n);
-            foreach (array('laeuft', 'gesund', 'stand') as $f) {
-                $werte['container/' . $t . '/' . $f] = '-';
+            if (!in_array($n, $gemeldet, true) && !isset($g['weg'][$n])) {
+                $g['weg'][$n] = array('versuche' => 0, 'zeit' => 0);
             }
-            $weg[$n] = $t;
+        }
+        // Ist ein vorgemerkter Container wieder da, wird er nicht abgeraeumt.
+        foreach (array_keys($g['weg']) as $n) {
+            if (in_array((string) $n, $gemeldet, true)) { unset($g['weg'][$n]); }
         }
     }
     $erg = dk_mqtt($werte, $gleich ? $alt : array());
-    foreach ($weg as $n => $t) {
-        // Im Merker bleibt er, bis alle drei '-' abgesetzt sind; danach steht
-        // er unter 'strich', damit Praefixwechsel und Deinstallation seine
-        // retained Themen noch kennen.
-        $alle = true;
-        foreach (array('laeuft', 'gesund', 'stand') as $f) {
-            if (!isset($erg['letzte']['container/' . $t . '/' . $f])) { $alle = false; break; }
+    $letzte = $erg['letzte'];
+    if ($g['weg']) {
+        $g = dk_mqtt_weg_abraeumen($g, $prae);
+        // Abgeraeumte bzw. vorgemerkte Themen aus dem Aenderungsfilter: kommt der Container wieder, geht er sofort.
+        foreach (array_keys($letzte) as $t) {
+            if (preg_match('#^container/([^/]+)/#', (string) $t, $m)) {
+                foreach (array_keys($g['weg']) as $n) {
+                    if (dk_container_abschnitt($n) === $m[1]) { unset($letzte[$t]); }
+                }
+            }
         }
-        if ($alle) { $strich[] = $n; } else { $gemeldet[] = $n; }
     }
-    $strich = array_slice(array_values(array_diff(array_unique(
-        array_filter($strich, 'is_string')), $gemeldet)), -500);
+    $g['container'] = array_values(array_unique(array_filter($gemeldet, 'is_string')));
+    dk_mqtt_gedaechtnis_schreiben($g);
     return array(
         'praefix'   => $prae,
-        'letzte'    => $erg['letzte'],
-        'container' => array_values(array_unique($gemeldet)),
-        'strich'    => $strich,
+        'letzte'    => $letzte,
         'versand'   => array('zeit' => time(), 'gesendet' => $erg['gesendet'],
                              'gescheitert' => $erg['gescheitert'], 'uebersprungen' => $erg['uebersprungen']),
     );
 }
 
-/** Die retained Themen, die dieses Plugin unter dem Praefix zuletzt fuehrte. */
+/** Die retained Themen, die dieses Plugin unter dem Praefix gefuehrt haben kann (seit 1.3.19 mit D11). */
 function dk_mqtt_eigene_retained($praefix)
 {
+    /* Die retained Themen, die dieses Plugin unter dem Praefix gefuehrt haben kann. Seit 1.3.19 (D11): dazu die
+     * Container der Wachliste, die Namen aus dem Gedaechtnis (gemeldet und vorgemerkt) und - antwortet Docker in
+     * der Frist - die aktuellen Container (leere Wachliste = alle: die Wachliste allein reicht nicht). Je Name die
+     * vier Containerthemen (laeuft, gesund, stand, oom). */
     $themen = array();
+    $namen = array();
     $zd = dk_zustandsdatei();
     $m = (isset($zd['mqtt']) && is_array($zd['mqtt'])) ? $zd['mqtt'] : array();
     if (isset($m['praefix']) && $m['praefix'] === $praefix) {
         foreach ((isset($m['letzte']) && is_array($m['letzte'])) ? array_keys($m['letzte']) : array() as $t) {
             if (dk_mqtt_retain_eintrag($t) === 1) { $themen[] = (string) $t; }
         }
-        $namen = array_merge((isset($m['container']) && is_array($m['container'])) ? $m['container'] : array(),
-                             (isset($m['strich']) && is_array($m['strich'])) ? $m['strich'] : array());
-        foreach ($namen as $n) {
-            if (!is_string($n)) { continue; }
-            $t = str_replace(array('/', '%'), '_', $n);
-            foreach (array('laeuft', 'gesund', 'stand') as $f) { $themen[] = 'container/' . $t . '/' . $f; }
+        // Zustandsdatei einer 1.3.18 (container, strich), falls noch eine liegt.
+        foreach (array('container', 'strich') as $k) {
+            foreach ((isset($m[$k]) && is_array($m[$k])) ? $m[$k] : array() as $n) { $namen[] = $n; }
         }
+    }
+    $g = dk_mqtt_gedaechtnis();
+    if ($g['praefix'] === $praefix) {
+        foreach ($g['container'] as $n) { $namen[] = $n; }
+        foreach (array_keys($g['weg']) as $n) { $namen[] = $n; }
+    }
+    $cfg = dk_config(false);
+    foreach ((array) $cfg['wachliste'] as $n) { $namen[] = $n; }
+    if (dk_bin() !== '') {
+        list($ok) = dk_zustand();
+        if ($ok) { foreach (dk_container() as $c) { $namen[] = $c['name']; } }
+    }
+    foreach (array_unique($namen) as $n) {
+        if (!is_string($n) || !dk_name_gueltig($n)) { continue; }
+        foreach (array_keys(dk_container_felder()) as $f) { $themen[] = 'container/' . dk_container_abschnitt($n) . '/' . $f; }
     }
     foreach (dk_mqtt_retain_tabelle() as $t => $r) {
         if ($r === 1 && strpos($t, '*') === false) { $themen[] = $t; }
@@ -1578,26 +1687,25 @@ function dk_mqtt_eigene_retained($praefix)
     return array_values(array_unique($themen));
 }
 
-/**
- * Abraeumen vormerken (M4): beim Praefixwechsel und beim Abschalten von
- * MQTT. Die Oberflaeche schreibt nur diese Vormerkung; abgesetzt wird im
- * Minutentakt, der ohnehin der einzige Sender ist. Rueckgabe: Zahl der Themen.
- */
+/** Abraeumen vormerken (M4, seit 1.3.19 auch N6) - beschrieben in der Funktion. */
 function dk_mqtt_abraeumen_vormerken($praefix)
 {
+    /* Abraeumen vormerken (M4): beim Praefixwechsel, beim Abschalten von MQTT und seit 1.3.19 beim Zurueckspielen
+     * einer Sicherung mit anderem Praefix oder MQTT aus (N6). Die Vormerkung liegt seit 1.3.19 NEBEN dem
+     * Datenordner (E1). Abgesetzt wird im Minutentakt. Rueckgabe: Zahl der Themen, -1 = nicht vorgemerkt. */
     $p = dk_paths();
-    $offen = dk_json_lesen($p['abraeumen']);
+    $offen = dk_mqtt_vormerkung_lesen();
     $themen = dk_mqtt_eigene_retained($praefix);
-    $bisher = (isset($offen[$praefix]) && is_array($offen[$praefix])) ? $offen[$praefix] : array();
-    $offen[$praefix] = array_values(array_unique(array_merge($bisher, $themen)));
-    if (!@is_dir($p['datadir'])) { @mkdir($p['datadir'], 0755, true); }
+    $bisher = isset($offen[$praefix]['themen']) ? $offen[$praefix]['themen'] : array();
+    $offen[$praefix] = array('themen' => array_values(array_unique(array_merge($bisher, $themen))),
+                             'versuche' => 0, 'zeit' => 0);
     if (!dk_json_schreiben($p['abraeumen'], $offen, 0644)) {
         dk_log('MQTT: das Abraeumen unter ' . $praefix . '/ liess sich nicht vormerken: ' . $p['abraeumen']);
         return -1;
     }
-    dk_log('MQTT: ' . count($offen[$praefix]) . ' zurueckbehaltene Themen unter ' . $praefix
+    dk_log('MQTT: ' . count($offen[$praefix]['themen']) . ' zurueckbehaltene Themen unter ' . $praefix
         . '/ zum Abraeumen vorgemerkt.');
-    return count($offen[$praefix]);
+    return count($offen[$praefix]['themen']);
 }
 
 /** Leere retain-Nutzlasten absetzen. Rueckgabe: Liste der gescheiterten Themen. */
@@ -1625,70 +1733,104 @@ function dk_mqtt_leer_senden($volle_themen, $wiederholen = 1)
     return $fehl;
 }
 
-/**
- * Vorgemerktes Abraeumen abarbeiten - auch bei ausgeschaltetem MQTT (M4).
- * Ein Thema faellt aus der Vormerkung, sobald sein Datagramm vollstaendig
- * abgesetzt ist (Merker auf den Erfolg des sendto). Ein Praefix, das gerade
- * wieder in Gebrauch ist, wird nicht geleert.
- */
+/** Vorgemerktes Abraeumen abarbeiten - seit 1.3.19 mit Ruecklesen (E-E8), beschrieben in der Funktion. */
 function dk_mqtt_abraeumen_offen()
 {
+    /* Vorgemerktes Abraeumen abarbeiten - auch bei ausgeschaltetem MQTT (M4). SEIT 1.3.19 (E-E8, Regeln/07 :215):
+     * kein Merker mehr auf den Erfolg des UDP-sendto. Geleert wird in einer kurzen TCP-Sitzung mit Ruecklesen
+     * (dk_broker_leeren(), bis zu drei Runden); erst ein bestaetigtes "geleert" bzw. "nichts" nimmt das Praefix aus
+     * der Vormerkung, danach geht der Fehlwert fluechtig ueber UDP (-1, bei stand "-"). Bleibt etwas belegt: naechster
+     * Versuch frueestens nach 10 Minuten, ab dem sechsten eine gebremste Zeile "bitte von Hand leeren". Ohne
+     * Brokerzugang (kein_broker, abgelehnt): der UDP-Weg wie bis 1.3.18, aber in drei Takten, erst dann vergessen.
+     * Ein Praefix, das gerade wieder in Gebrauch ist, wird nicht geleert. Rueckgabe: Zahl der geleerten Themen. */
     $p = dk_paths();
-    if (!@is_file($p['abraeumen'])) { return 0; }
-    $offen = dk_json_lesen($p['abraeumen']);
+    $offen = dk_mqtt_vormerkung_lesen();
+    if (!$offen) {
+        if (@is_file($p['abraeumen'])) { @unlink($p['abraeumen']); }
+        return 0;
+    }
     $cfg = dk_config();
     $rest = array();
     $n = 0;
-    foreach ($offen as $prae => $themen) {
-        if (!is_string($prae) || !preg_match('/^[A-Za-z0-9_\-]{1,32}\z/', $prae) || !is_array($themen)) { continue; }
+    $jetzt = time();
+    foreach ($offen as $prae => $e) {
         if (!empty($cfg['mqtt_aktiv']) && $prae === $cfg['mqtt_praefix']) { continue; }
         $voll = array();
-        foreach ($themen as $t) {
-            if (is_string($t) && preg_match('#^[A-Za-z0-9_./\-]{1,200}\z#', $t)) { $voll[] = $prae . '/' . $t; }
+        foreach ($e['themen'] as $t) { $voll[] = $prae . '/' . $t; }
+        if (!$voll) { continue; }
+        $zeit = (int) $e['zeit'];
+        $versuche = (int) $e['versuche'];
+        if ($zeit > 0 && $zeit <= $jetzt && $jetzt - $zeit < 600 && empty($e['udp'])) { $rest[$prae] = $e; continue; }
+        $r = dk_broker_leeren($voll);
+        if ($r['lage'] === 'geleert' || $r['lage'] === 'nichts') {
+            dk_mqtt_fehlwerte_senden($voll);
+            $n += count($voll);
+            dk_log('MQTT: ' . count($voll) . ' zurueckbehaltene Themen unter ' . $prae . '/ abgeraeumt ('
+                . ($r['lage'] === 'geleert' ? 'vom Broker bestaetigt' : 'der Broker hielt keines zurueck') . ').');
+            continue;
         }
-        $fehl = dk_mqtt_leer_senden($voll);
-        $n += count($voll) - count($fehl);
-        if ($fehl) {
-            $rest[$prae] = array();
-            foreach ($fehl as $f) { $rest[$prae][] = substr($f, strlen($prae) + 1); }
+        $versuche++;
+        if ($r['lage'] === 'rest') {
+            $e['themen'] = array();
+            foreach ($r['offen'] as $t) { $e['themen'][] = substr($t, strlen($prae) + 1); }
+            $e['versuche'] = $versuche;
+            $e['zeit'] = $jetzt;
+            unset($e['udp']);
+            if ($versuche >= 6) {
+                dk_log_gebremst('abraeumen_hand', 'MQTT: noch zurueckbehalten - bitte von Hand leeren: '
+                    . implode(', ', $r['offen']) . ' (mosquitto_pub -r -n -t <thema>)', 86400);
+            }
+            $rest[$prae] = $e;
+            continue;
         }
+        // Kein Brokerzugang: der UDP-Weg, dreimal in drei Takten, erst dann vergessen.
+        dk_mqtt_leer_senden($voll);
+        dk_mqtt_fehlwerte_senden($voll);
+        if ($versuche >= 3) {
+            dk_log('MQTT: ' . count($voll) . ' Themen unter ' . $prae . '/ dreimal ueber den UDP-Eingang abgeraeumt ('
+                . 'Broker ohne Zugang: ' . $r['lage'] . ') - ohne Ruecklesen; pruefen mit dem MQTT-Finder.');
+            continue;
+        }
+        $e['versuche'] = $versuche;
+        $e['zeit'] = $jetzt;
+        $e['udp'] = 1;
+        $rest[$prae] = $e;
     }
     if ($rest) {
         dk_json_schreiben($p['abraeumen'], $rest, 0644);
     } else {
         @unlink($p['abraeumen']);
     }
-    if ($n > 0) { dk_log('MQTT: ' . $n . ' zurueckbehaltene Themen abgeraeumt.'); }
+    if (@is_file($p['abraeumen_alt'])) { @unlink($p['abraeumen_alt']); }
     return $n;
 }
 
-/**
- * Fuer die Deinstallation (M4, Entscheidung 3): alle eigenen retained Themen
- * unter dem eingestellten Praefix und alles Vorgemerkte leeren. Jedes leere
- * Datagramm geht zweimal hinaus - der Eingang verwirft Stoesse, und eine
- * zweite Loeschung schadet nicht. Rueckgabe array(themen, gescheitert).
- */
+/** Fuer die Deinstallation - seit 1.3.19 mit Ruecklesen (E-E8, D11), beschrieben in der Funktion. */
 function dk_mqtt_leeren_alles()
 {
+    /* Fuer die Deinstallation (M4, Entscheidung 3; seit 1.3.19 E-E8/D11): alle eigenen retained Themen unter dem
+     * eingestellten Praefix (Wachliste, Gedaechtnis, aktuelle Container) und alles Vorgemerkte - in einer kurzen
+     * TCP-Sitzung mit Ruecklesen (bis zu drei Runden). Ohne Brokerzugang der UDP-Weg wie bis 1.3.18 (jedes leere
+     * Datagramm zweimal), ohne Ruecklesen. Rueckgabe array(lage geleert|nichts|rest|udp, Zahl, offene Themen). */
     $cfg = dk_config(false);
-    $p = dk_paths();
     $voll = array();
     $zd = dk_zustandsdatei();
-    $war = !empty($cfg['mqtt_aktiv']) || (isset($zd['mqtt']['praefix']));
+    $g = dk_mqtt_gedaechtnis();
+    $war = !empty($cfg['mqtt_aktiv']) || isset($zd['mqtt']['praefix']) || $g['praefix'] !== '';
     if ($war) {
-        foreach (dk_mqtt_eigene_retained($cfg['mqtt_praefix']) as $t) {
-            $voll[] = $cfg['mqtt_praefix'] . '/' . $t;
-        }
+        foreach (dk_mqtt_eigene_retained($cfg['mqtt_praefix']) as $t) { $voll[] = $cfg['mqtt_praefix'] . '/' . $t; }
     }
-    foreach (dk_json_lesen($p['abraeumen']) as $prae => $themen) {
-        if (!is_string($prae) || !preg_match('/^[A-Za-z0-9_\-]{1,32}\z/', $prae) || !is_array($themen)) { continue; }
-        foreach ($themen as $t) {
-            if (is_string($t) && preg_match('#^[A-Za-z0-9_./\-]{1,200}\z#', $t)) { $voll[] = $prae . '/' . $t; }
-        }
+    foreach (dk_mqtt_vormerkung_lesen() as $prae => $e) {
+        foreach ($e['themen'] as $t) { $voll[] = $prae . '/' . $t; }
     }
     $voll = array_values(array_unique($voll));
+    if (!$voll) { return array('nichts', 0, array()); }
+    $r = dk_broker_leeren($voll);
+    if ($r['lage'] === 'geleert' || $r['lage'] === 'nichts' || $r['lage'] === 'rest') {
+        return array($r['lage'], count($voll), $r['offen']);
+    }
     $fehl = dk_mqtt_leer_senden($voll, 2);
-    return array(count($voll), count($fehl));
+    return array('udp', count($voll), $fehl);
 }
 
 /**
@@ -1714,33 +1856,44 @@ function dk_abo_datei_nachfuehren()
     return true;
 }
 
-/**
- * Alle Themen, die dieses Plugin veroeffentlicht.
- *
- * EINE Quelle - dieselbe Liste versorgt den Sendecode, die Themenliste im
- * Reiter MQTT und die Kongruenzprobe im Reiter Test. Eine Anleitung, die
- * Themen nennt, die der Sendecode nie veroeffentlicht, ist schlimmer als gar
- * keine: sie schickt den Anwender in Loxone auf die Suche nach einem Wert,
- * den es nicht gibt.
- */
-function dk_mqtt_themen()
+/** Alle Themen, die dieses Plugin veroeffentlicht - EINE Quelle; beschrieben in der Funktion. */
+function dk_mqtt_themen($merk_container = null)
 {
+    /* Alle Themen, die dieses Plugin veroeffentlicht - EINE Quelle fuer den Sendecode, die Themenliste und die
+     * Namenstabelle (Reiter MQTT und Einbindung) und die Kongruenzprobe im Reiter Test.
+     *
+     * SEIT 1.3.19 nach der -1-Regel (Entscheidung 2 a-c, Entwurf Tabelle 2.3):
+     *  (a) Docker schweigt: alle Zaehl-, Portainer- und Containerthemen -1 (stand "-"), schleife -1, images/
+     *      freigebbar -1 - statt die letzten Werte im Broker stehen zu lassen (bis 1.3.18 M2, Entscheidungen 8/9 von
+     *      1.3.9; der Grund "-1 sah aus wie ein geloeschter Container" entfaellt: geloescht heisst stand "fehlt" bzw.
+     *      Abraeumen, -1 heisst "keine Aussage", status/ok 0 sagt warum). Bei leerer Wachliste kennt nur das
+     *      Gedaechtnis die Namen ($merk_container; null = aus dem Gedaechtnis lesen).
+     *  (c) platte/*: -1 ohne frischen Messwert (bis 1.3.18 fehlten die Themen, E4); frei_mb misst ohne Docker.
+     *  Container der ausdruecklichen Wachliste, den es nicht gibt: laeuft/gesund/oom -1, stand "fehlt" (Aussage).
+     *  (b) verschwundene Container raeumt dk_mqtt_takt() ab.
+     * Neu: container/<n>/oom (V2). */
     list($ok) = dk_zustand();
     $zd = dk_zustandsdatei();
     $frisch = dk_takt_frisch();
+    $cfg = dk_config();
     $werte = array(
         'status/ok'      => $ok ? 1 : 0,
+        'status/zaehler' => isset($zd['zaehler']) ? (int) $zd['zaehler'] : 0,
         // Zeitstempel des letzten Takts, Unix-Sekunden, fluechtig (M5).
         'status/ts'      => isset($zd['zeit']) ? (int) $zd['zeit'] : 0,
     );
     if (!$ok) {
-        /* Docker schweigt (M2, Entscheidung 8 und 9): die Zustaende bleiben im
-         * Broker stehen, nur das Signal geht hinaus. Bis 1.3.9 gingen hier
-         * 'fehlt' fuer jeden Container der Wachliste und 'gesamt 0' hinaus -
-         * dieselben Werte wie fuer einen geloeschten Container. Der freie
-         * Platz misst ohne Docker und bleibt deshalb. */
-        $werte['status/zaehler'] = isset($zd['zaehler']) ? (int) $zd['zaehler'] : 0;
-        if ($frisch && isset($zd['platz']['frei_mb'])) { $werte['platte/frei_mb'] = (int) $zd['platz']['frei_mb']; }
+        foreach (array('gesamt', 'laeuft', 'gestoppt', 'ausfall', 'pausiert', 'ungesund', 'fehlt', 'schleife', 'portainer') as $k) {
+            $werte['status/' . $k] = -1;
+        }
+        $werte['platte/images_mb'] = -1;
+        $werte['platte/freigebbar_mb'] = -1;
+        $werte['platte/frei_mb'] = ($frisch && isset($zd['platz']['frei_mb'])) ? (int) $zd['platz']['frei_mb'] : -1;
+        if ($merk_container === null) { $merk_container = dk_mqtt_gedaechtnis()['container']; }
+        $namen = $cfg['wachliste'] ? $cfg['wachliste'] : array_values(array_filter((array) $merk_container, 'is_string'));
+        foreach ($namen as $n) {
+            foreach (dk_container_felder() as $f => $fw) { $werte['container/' . dk_container_abschnitt($n) . '/' . $f] = $fw; }
+        }
         return $werte;
     }
     $z = dk_zaehlung();
@@ -1756,19 +1909,18 @@ function dk_mqtt_themen()
         'status/schleife'  => $frisch ? $z['schleife'] : -1,
         'status/portainer' => dk_portainer_laeuft() ? 1 : 0,
     );
-    $werte['status/zaehler'] = isset($zd['zaehler']) ? (int) $zd['zaehler'] : 0;
     foreach (array('images_mb', 'freigebbar_mb', 'frei_mb') as $k) {
-        if ($frisch && isset($zd['platz'][$k])) { $werte['platte/' . $k] = (int) $zd['platz'][$k]; }
+        $werte['platte/' . $k] = ($frisch && isset($zd['platz'][$k])) ? (int) $zd['platz'][$k] : -1;
     }
     $nach = array();
     foreach ($z['liste'] as $c) { $nach[$c['name']] = $c; }
     foreach ($z['wache'] as $name => $lauf) {
-        // Nur / und % ersetzt der Gateway selbst - Punkte bleiben stehen und
-        // sind in einem Thema erlaubt. Deshalb hier nur das Noetigste.
-        $t = str_replace(array('/', '%'), '_', $name);
+        $t = dk_container_abschnitt($name);
+        $da = isset($nach[$name]);
         $werte['container/' . $t . '/laeuft'] = $lauf;
-        $werte['container/' . $t . '/gesund'] = isset($nach[$name]) ? $nach[$name]['gesund'] : -1;
-        $werte['container/' . $t . '/stand']  = isset($nach[$name]) ? $nach[$name]['zustand'] : 'fehlt';
+        $werte['container/' . $t . '/gesund'] = $da ? $nach[$name]['gesund'] : -1;
+        $werte['container/' . $t . '/stand']  = $da ? $nach[$name]['zustand'] : 'fehlt';
+        $werte['container/' . $t . '/oom']    = $da ? (int) $nach[$name]['oom'] : -1;
     }
     return $werte;
 }
@@ -2001,10 +2153,14 @@ function dk_startzeit()
  */
 if (!defined('DK_ANSAGE_SPERRE_S')) { define('DK_ANSAGE_SPERRE_S', 1800); }
 
-/** Erlaubte Ausgabearten: alle des Moduls ausser 'audioserver' (kein Antwortweg zu Loxone im Takt). */
+/** Erlaubte Ausgabearten - seit 1.3.19 mit Sonos4Lox und SonoX (E6), beschrieben in der Funktion. */
 function dk_ansage_modi()
 {
-    return array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox');
+    /* Erlaubte Ausgabearten: alle des Moduls 1.1.4 ausser 'audioserver' (kein Antwortweg zu Loxone im Takt).
+     * Sonos4Lox und SonoX seit 1.3.19 (Pflegewelle 22; ungemessen, kein Sonos im Haus - das Modul prueft
+     * Installation und Zone; SonoX schickt Ansagetexte an Google). Bis 1.3.18 stand hier "alle des Moduls" -
+     * Sonos4Lox fehlte dabei schon (E6). */
+    return array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox', 'sonos4lox', 'sonox');
 }
 
 /** Die Anlaesse: Kennung => Konfigurationsschluessel. */
@@ -2076,6 +2232,10 @@ function dk_ansage_zu($kennung)
     if (strncmp($k, 'SCHLEIFE:', 9) === 0) {
         return array('container', sprintf(dk_t('DURCHSAGE.TEXT_SCHLEIFE'), (int) $teil));
     }
+    // V2 (1.3.19): vom System wegen Speichermangel beendet.
+    if (strncmp($k, 'OOM:', 4) === 0) {
+        return array('container', sprintf(dk_t('DURCHSAGE.TEXT_OOM'), $namen($teil)));
+    }
     if (strncmp($k, 'PLATZ:', 6) === 0) {
         return array('platz', sprintf(dk_t('DURCHSAGE.TEXT_PLATZ'), (int) $teil));
     }
@@ -2131,10 +2291,12 @@ function dk_ansage_befund(array $befund, $vorher, $merker, $jetzt = null)
     return array('sperre' => $sperre);
 }
 
-/** Die Zeile im Reiter Test: 1 Haken, 0 Kreuz, -1 Strich (aus). Der Text ist maskiert (Modul). */
-function dk_pruefe_ansage($cfg = null)
+function dk_pruefe_ansage($cfg = null, $offen = false)
 {
-    list($st, $text) = ansage_pruefzeile(dk_tts($cfg), true, dk_ansage_k());
+    /* Die Zeile im Reiter Test: 1 Haken, 0 Kreuz, -1 Strich (aus). Der Text ist maskiert (Modul). SEIT 1.3.19
+     * (D22, Bauart Abfuhr 1.4.26): die Erreichbarkeit fragt das Modul nur bei ausdruecklich angefordertem Reiter
+     * Test ($offen) - bis 1.3.18 bei jedem Seitenaufruf (fest true). */
+    list($st, $text) = ansage_pruefzeile(dk_tts($cfg), (bool) $offen, dk_ansage_k());
     return array($st === 1 ? 1 : ($st === -2 ? -1 : 0), $text);
 }
 
@@ -2174,6 +2336,12 @@ function dk_takt()
     }
     $ergebnis['gelaufen'] = true;
     dk_zeitgrenze(30);
+    /* D19 (1.3.19): cron/cron.01min ruht nur bei einer FRISCHEN Marke (unter 3600 s); eine aeltere (oder eine aus
+     * der Zukunft) haelt den Takt nicht mehr still an - er laeuft und sagt es hoechstens stuendlich. */
+    list($dk_ml, $dk_mz, $dk_ma) = dk_marke_lage();
+    if ($dk_ml && ($dk_ma < 0 || $dk_ma >= 3600 || getenv('DK_MARKE_ALT') !== false)) {
+        dk_log_gebremst('marke', sprintf(dk_t('LOG.MARKE_ALT'), date('Y-m-d H:i:s', $dk_mz), $p['marke']), 3600);
+    }
 
     dk_config_vervollstaendigen();
     $cfg = dk_config();
@@ -2340,6 +2508,11 @@ function dk_takt()
 function dk_endpunkt_probe($frisch = false)
 {
     $p = dk_paths();
+    /* Seit 1.3.19 (N7): ist der HTTP-Weg aus (endpunkt_ein 0), wird nichts aufgerufen - graue Zeile, keine
+     * Stoerung (Regeln/04: ausgeschaltet ist eine Entscheidung). */
+    if (!dk_endpunkt_an()) {
+        return array('stand' => -1, 'text' => dk_t('TEST.A_EP_AUS'), 'zeit' => time());
+    }
     $cache = $p['datadir'] . '/endpunktprobe.json';
     if (!$frisch) {
         $d = dk_json_lesen($cache);
@@ -2462,10 +2635,14 @@ function dk_eingabe_felder($form)
                                              'schleife_grenze', 'platz_grenze_mb'),
                             'haken' => array('melden_aktiv', 'updates_aktiv'),
                             'liste' => array(), 'nie' => array('token_neu')),
-        'mqtt'     => array('text' => array('mqtt_praefix'), 'haken' => array('mqtt_aktiv'),
+        'mqtt'     => array('text' => array('mqtt_praefix'),
+                            'haken' => array('mqtt_aktiv', 'befehle_mqtt_ein', 'befehle_mqtt_steuern'),
                             'liste' => array(), 'nie' => array()),
         'wache'    => array('text' => array(), 'haken' => array('wache_alle'),
-                            'liste' => array('wache'), 'nie' => array()),
+                            'liste' => array('wache', 'neustart_erlaubt'), 'nie' => array()),
+        // Seit 1.3.19: der HTTP-Weg (Reiter Einbindung, Abschnitt "Bestehende Anlagen").
+        'endpunkt' => array('text' => array(), 'haken' => array('endpunkt_ein'),
+                            'liste' => array(), 'nie' => array()),
     );
     /* Nr. 36 b: Felder und Anlaesse der Ansage; die Sprechtoken stehen unter 'geheim' - markiert werden
      * duerfen sie, mitreisen nie. */
@@ -2675,6 +2852,13 @@ function dk_befund()
         $kand[] = array('kennung' => 'TAKT_ALT', 'schwere' => 3,
                         'text' => sprintf(dk_t('BEFUND.TAKT_ALT'), (int) round($alter / 60)));
     }
+    /* D19/E2 (1.3.19): eine Upgrade-Marke, die laenger als eine Stunde (oder aus der Zukunft) liegt - der Takt
+     * laeuft trotzdem (cron/cron.01min), aber eine Aktualisierung ist offenbar nicht zu Ende gelaufen. */
+    list($dk_ml, $dk_mz, $dk_ma) = dk_marke_lage();
+    if ($dk_ml && ($dk_ma < 0 || $dk_ma >= 3600)) {
+        $kand[] = array('kennung' => 'TAKT_MARKE', 'schwere' => 4,
+                        'text' => sprintf(dk_t('BEFUND.TAKT_MARKE'), date('Y-m-d H:i:s', $dk_mz), dk_paths()['marke']));
+    }
     $z = dk_zaehlung();
     if ($z['fehlt'] > 0) {
         $namen = array();
@@ -2692,6 +2876,18 @@ function dk_befund()
         foreach ($z['liste'] as $c) { if ($c['gesund'] === 3) { $namen[] = $c['name']; } }
         $kand[] = array('kennung' => 'UNGESUND:' . implode(',', $namen), 'schwere' => 3,
                         'text' => sprintf(dk_t('BEFUND.UNGESUND'), implode(', ', $namen)));
+    }
+    /* V2 (1.3.19): ueberwachte Container, die das System wegen Speichermangel beendet hat und die nicht laufen.
+     * Vor AUSFALL, weil ein solcher Container auch als Ausfall zaehlt (Exited 137) - bei gleicher Schwere sagt
+     * der Befund so den Grund. */
+    $dk_oom = array();
+    $dk_wl = dk_wachliste();
+    foreach ($z['liste'] as $c) {
+        if (!empty($c['oom']) && empty($c['laeuft']) && in_array($c['name'], $dk_wl, true)) { $dk_oom[] = $c['name']; }
+    }
+    if ($dk_oom) {
+        $kand[] = array('kennung' => 'OOM:' . implode(',', $dk_oom), 'schwere' => 4,
+                        'text' => sprintf(dk_t('MELDUNG.OOM'), implode(', ', $dk_oom)));
     }
     if ($z['wache_ausfall'] > 0) {
         $kand[] = array('kennung' => 'AUSFALL:' . $z['wache_ausfall'], 'schwere' => 4,
@@ -3555,17 +3751,22 @@ function dk_portainer_aktualisieren()
  */
 function dk_log($text)
 {
+    /* SEIT 1.3.19 (D14): anhaengen mit LOCK_EX; gekuerzt wird ueber eine Nebendatei mit Prozessnummer und rename()
+     * statt file_put_contents() auf die Datei selbst (bis 1.3.18 konnten Takt und Oberflaeche einander die
+     * gekuerzte Datei halb ueberschreiben). Rotation, damit eine Dauerstoerung die Ramdisk nicht vollschreibt. */
     if (dk_log_aus()) { return false; }
     $p = dk_paths();
     if (!@is_dir($p['logdir'])) { @mkdir($p['logdir'], 0775, true); }
-    // Rotation, damit eine Dauerstoerung die Ramdisk nicht vollschreibt.
     clearstatcache(true, $p['log']);
     if (@is_file($p['log']) && @filesize($p['log']) > 262144) {
         $rest = array_slice(@file($p['log'], FILE_IGNORE_NEW_LINES) ?: array(), -300);
-        @file_put_contents($p['log'], implode("\n", $rest) . "\n");
+        $tmp = $p['log'] . '.tmp.' . getmypid();
+        if (@file_put_contents($tmp, implode("\n", $rest) . "\n") !== false) {
+            if (!@rename($tmp, $p['log'])) { @unlink($tmp); }
+        }
     }
     return @file_put_contents($p['log'],
-        '[' . date('Y-m-d H:i:s') . '] ' . $text . "\n", FILE_APPEND) !== false;
+        '[' . date('Y-m-d H:i:s') . '] ' . $text . "\n", FILE_APPEND | LOCK_EX) !== false;
 }
 
 /**
@@ -3732,6 +3933,7 @@ function dk_beispielzeile()
     $teile[] = 'C_portainer=1';
     $teile[] = 'H_portainer=2';
     $teile[] = 'TAKTALTER=12';
+    $teile[] = 'O_portainer=0';      // V2 (1.3.19): hinten, wie im Endpunkt
     return implode(';', $teile);
 }
 
@@ -3838,6 +4040,17 @@ function dk_xml_virtual_in_http($host, $token)
             . ' Unit="' . dk_x('<v>') . '"'
             . ' HintText=""'
             . '/>' . $crlf;
+        // V2 (1.3.19, E-E15): OOM je Container, 1/0, -1 fehlt - im Endpunkt hinten hinter TAKTALTER.
+        $o .= "\t" . '<VirtualInHttpCmd Title="' . dk_x('DOCKERNG_O_' . $sicher) . '"'
+            . ' Comment="' . dk_x(dk_t('LOX.F_OOM_KURZ')) . '"'
+            . ' Check="' . dk_x('O_' . $sicher . '=\v') . '"'
+            . ' Signed="true" Analog="true"'
+            . ' SourceValLow="0" DestValLow="0"'
+            . ' SourceValHigh="100" DestValHigh="100"'
+            . ' DefVal="0" MinVal="-1" MaxVal="1"'
+            . ' Unit="' . dk_x('<v>') . '"'
+            . ' HintText=""'
+            . '/>' . $crlf;
     }
     $o .= '</VirtualInHttp>' . $crlf;
     return $o;
@@ -3912,6 +4125,8 @@ function dk_sicherung_lesen($roh, &$namen = null)
     $mangel = array();
     $hinweis = array();
     $namen = array();
+    $dk_nie = array();
+    $dk_spaet = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
         return array(null, array(dk_t('EINST.SICH_KEIN_JSON')), 0, array());
@@ -3949,6 +4164,15 @@ function dk_sicherung_lesen($roh, &$namen = null)
             $namen[] = $k;
             continue;
         }
+        if (in_array($k, dk_nie_aus_sicherung(), true)) {
+            /* E-E12 (1.3.19): Steuerfreigabe und Neustartliste kommen nie aus einer Sicherung - ein eingreifender
+             * Weg wird nur durch einen Klick in DIESER Oberflaeche scharf. Der Wert ist geprueft (ein
+             * unzulaessiger bleibt eine Beanstandung), uebernommen wird der geltende. */
+            $neu[$k] = dk_config()[$k];
+            $dk_nie[] = $k;
+            $anzahl++;
+            continue;
+        }
         $neu[$k] = $norm;
         $anzahl++;
     }
@@ -3971,6 +4195,13 @@ function dk_sicherung_lesen($roh, &$namen = null)
                 $dk_abeh[] = $fk;
                 continue;
             }
+            /* N2 (1.3.19): die Schluessel, die eine 1.3.18-Sicherung nicht kennt - der GELTENDE Wert bleibt
+             * (nicht die Vorgabe: sonst schaltete eine alte Sicherung den HTTP-Weg einer Bestandsanlage ab). */
+            if (in_array($fk, dk_spaet_schluessel(), true)) {
+                $neu[$fk] = dk_config()[$fk];
+                $dk_spaet[] = $fk;
+                continue;
+            }
             if ($fk === 'portainer_https_port') {
                 $neu[$fk] = (int) dk_config()[$fk];
                 $hinweis[] = sprintf(dk_t('EINST.SICH_NEU_VORGABE'), dk_e($fk));
@@ -3981,6 +4212,12 @@ function dk_sicherung_lesen($roh, &$namen = null)
     }
     if ($dk_abeh) {
         $hinweis[] = sprintf(dk_t('DURCHSAGE.SICH_BEHALTEN'), dk_e(implode(', ', $dk_abeh)));
+    }
+    if ($dk_spaet) {
+        $hinweis[] = sprintf(dk_t('EINST.SICH_SPAET'), dk_e(implode(', ', $dk_spaet)));
+    }
+    if ($dk_nie) {
+        $hinweis[] = sprintf(dk_t('EINST.SICH_STEUER'), dk_e(implode(', ', $dk_nie)));
     }
     if (!$mangel && (int) $neu['portainer_port'] === (int) $neu['portainer_https_port']) {
         $mangel[] = dk_t('FEHLER.PORT_GLEICH');
@@ -4046,4 +4283,821 @@ function dk_rueckspiel_maengel($aus = null)
     list($neu) = dk_sicherung_lesen($js, $namen);
     if ($neu !== null) { return array(); }
     return $namen ? array_values(array_unique($namen)) : array('?');
+}
+
+/* ==================================================================
+ * Gruppe 21 (Docker NG 1.3.19, 25.10.2026) - neue Funktionen
+ *
+ * Entwurf entwurf_gruppe21_dk.txt (md5 1ac16cf7), Abschnitte 2, 3 und 7;
+ * Entscheidungen ENTSCHEIDUNGEN_GRUPPE21_DOCKER.md 1-4, E-E1 bis E-E20.
+ * ================================================================== */
+
+/**
+ * Uebergang fuer Bestandsdateien (Entwurf 2.6/3.2, E-E3): eine Konfiguration MIT Merkwort, der ein Schluessel
+ * fehlt, bekommt nicht die neue Vorgabe, sondern das Verhalten der Fassung, die sie schrieb:
+ *   endpunkt_ein fehlt -> 1 (der HTTP-Endpunkt einer Bestandsanlage antwortet weiter),
+ *   mqtt_aktiv fehlt   -> 0 (Stand vor 1.3.0: MQTT war aus).
+ * Eine Neuinstallation (keine Datei, "{}") behaelt die Vorgaben (endpunkt_ein 0, mqtt_aktiv 1). EINE Stelle fuer
+ * dk_config() und dk_config_vervollstaendigen() - sonst schriebe der erste Takt die Vorgabe 0 in eine Bestandsdatei.
+ */
+function dk_uebergang(array $d, $bestand)
+{
+    if (!$bestand) { return $d; }
+    if (!array_key_exists('endpunkt_ein', $d)) { $d['endpunkt_ein'] = 1; }
+    if (!array_key_exists('mqtt_aktiv', $d)) { $d['mqtt_aktiv'] = 0; }
+    return $d;
+}
+
+/**
+ * Die Konfiguration frisch von der Platte (N1, Pflicht mit V3): fuer den dauerhaften Dienst der Befehlsbruecke, der
+ * einstellungen() bei jedem Stapel und alle 30 s ruft. dk_config() merkt sich den Stand je Prozess - der Dienst liefe
+ * sonst mit Wachliste, Neustartliste und Haken seines Starts weiter. Ohne Heilen: der Dienst schreibt keine
+ * Konfiguration.
+ */
+function dk_config_neu()
+{
+    dk_config_speicher(false);
+    return dk_config(false);
+}
+
+/**
+ * Schluessel, die eine Sicherung aus 1.3.18 noch nicht kennt (N2, E-E12). Fehlt einer in der Datei, gilt der
+ * GELTENDE Wert (Hinweis), nicht die Vorgabe - sonst schaltete eine 1.3.18-Sicherung den HTTP-Weg einer
+ * Bestandsanlage still ab (G18 N3, G19 N1), und ohne diese Liste waere keine 1.3.18-Sicherung mehr zurueckspielbar.
+ */
+function dk_spaet_schluessel()
+{
+    return array('endpunkt_ein', 'befehle_mqtt_ein', 'befehle_mqtt_steuern', 'neustart_erlaubt');
+}
+
+/** Steuerfreigabe und Neustartliste kommen nie aus einer Sicherung (E-E12): der geltende Wert bleibt. */
+function dk_nie_aus_sicherung()
+{
+    return array('befehle_mqtt_steuern', 'neustart_erlaubt');
+}
+
+/** Antwortet der HTTP-Endpunkt (alter Weg)? Nur mit endpunkt_ein = 1 (Entwurf 3.2). */
+function dk_endpunkt_an($cfg = null)
+{
+    $cfg = is_array($cfg) ? $cfg : dk_config();
+    return isset($cfg['endpunkt_ein']) && (int) $cfg['endpunkt_ein'] === 1;
+}
+
+/* ---------------- MQTT: Felder, Namen, Gedaechtnis (Entwurf 2.2-2.5) ---------------- */
+
+/** Felder je Container mit ihrem Fehlwert: Zahl -1, Text "-" (nie "-" auf einer Zahl). */
+function dk_container_felder()
+{
+    return array('laeuft' => -1, 'gesund' => -1, 'stand' => '-', 'oom' => -1);
+}
+
+/** Themenabschnitt eines Containernamens: "/", "%" und Leerzeichen -> "_" (Docker-Namen tragen keins davon). */
+function dk_container_abschnitt($name)
+{
+    return str_replace(array('/', '%', ' '), '_', (string) $name);
+}
+
+/**
+ * Der Name, den das MQTT-Gateway einem Thema gibt (build_vi_name, V1 und V2): Praefix + "_" + Thema, "/", "%" und
+ * Leerzeichen -> "_"; Punkt, Bindestrich und Gross/klein bleiben. EINE Stelle fuer Namenstabelle, Hakenliste,
+ * Bausteinliste und die Pruefzeile im Reiter Test.
+ */
+function dk_gateway_name($praefix, $thema)
+{
+    return str_replace(array('/', '%', ' '), '_', (string) $praefix . '/' . (string) $thema);
+}
+
+/** Fehlwert eines (vollen oder kurzen) Themas fuer das fluechtige Nachsenden: stand "-", sonst -1. */
+function dk_mqtt_fehlwert($thema)
+{
+    return substr((string) $thema, -6) === '/stand' ? '-' : '-1';
+}
+
+/**
+ * Das MQTT-Gedaechtnis NEBEN dem Datenordner (E1, E-E7): Praefix, zuletzt gemeldete Container und die
+ * vorgemerkten verschwundenen Container (Name => Versuche, Zeit, udp). purge_installation loescht data/plugins/
+ * <ordner>/ bei jedem Upgrade - dieses Geschwister bleibt; uninstall raeumt es nach --mqtt-leeren ab.
+ */
+function dk_mqtt_gedaechtnis()
+{
+    $d = dk_json_lesen(dk_paths()['mqtt_gedaechtnis']);
+    $g = array('praefix' => '', 'container' => array(), 'weg' => array(), 'zeit' => 0);
+    if (isset($d['praefix']) && is_string($d['praefix']) && preg_match('/^[A-Za-z0-9_\-]{1,32}\z/', $d['praefix'])) {
+        $g['praefix'] = $d['praefix'];
+    }
+    foreach ((isset($d['container']) && is_array($d['container'])) ? $d['container'] : array() as $n) {
+        if (dk_name_gueltig($n) && !in_array($n, $g['container'], true)) { $g['container'][] = $n; }
+    }
+    foreach ((isset($d['weg']) && is_array($d['weg'])) ? $d['weg'] : array() as $n => $e) {
+        if (!dk_name_gueltig((string) $n)) { continue; }
+        $e = is_array($e) ? $e : array();
+        $g['weg'][(string) $n] = array('versuche' => isset($e['versuche']) ? (int) $e['versuche'] : 0,
+                                      'zeit' => isset($e['zeit']) ? (int) $e['zeit'] : 0)
+                                + (!empty($e['udp']) ? array('udp' => 1) : array());
+    }
+    return $g;
+}
+
+/** Gedaechtnis schreiben (0644, kein Geheimnis) - nur bei Aenderung. */
+function dk_mqtt_gedaechtnis_schreiben(array $g)
+{
+    $p = dk_paths();
+    $alt = dk_json_lesen($p['mqtt_gedaechtnis']);
+    $neu = array('praefix' => (string) $g['praefix'], 'container' => array_values($g['container']),
+                 'weg' => $g['weg'] ? $g['weg'] : new stdClass());
+    if (json_encode($alt) === json_encode(json_decode(json_encode($neu), true))) { return true; }
+    $ziel = dirname($p['mqtt_gedaechtnis']);
+    if (!@is_dir($ziel)) { @mkdir($ziel, 0755, true); }
+    return dk_json_schreiben($p['mqtt_gedaechtnis'], $neu, 0644);
+}
+
+/**
+ * Die Vormerkung lesen (neben dem Datenordner, seit 1.3.19) - samt einer Vormerkung am alten Ort im Datenordner
+ * (bis 1.3.18, einmaliger Umzug; dk_mqtt_abraeumen_offen() loescht sie danach). Die alte Form (Praefix => Themen)
+ * wird mitgelesen. Rueckgabe Praefix => array(themen, versuche, zeit[, udp]); nur gueltige Praefixe und Themen.
+ */
+function dk_mqtt_vormerkung_lesen()
+{
+    $p = dk_paths();
+    $aus = array();
+    foreach (array($p['abraeumen_alt'], $p['abraeumen']) as $f) {
+        foreach (dk_json_lesen($f) as $prae => $e) {
+            if (!is_string($prae) || !preg_match('/^[A-Za-z0-9_\-]{1,32}\z/', $prae)) { continue; }
+            $th = (is_array($e) && isset($e['themen']) && is_array($e['themen'])) ? $e['themen'] : (is_array($e) ? $e : array());
+            $gut = array();
+            foreach ($th as $t) {
+                if (is_string($t) && preg_match('#^[A-Za-z0-9_./\-]{1,200}\z#', $t)) { $gut[] = $t; }
+            }
+            $bisher = isset($aus[$prae]) ? $aus[$prae]['themen'] : array();
+            $aus[$prae] = array('themen' => array_values(array_unique(array_merge($bisher, $gut))),
+                                'versuche' => (is_array($e) && isset($e['versuche'])) ? (int) $e['versuche'] : 0,
+                                'zeit' => (is_array($e) && isset($e['zeit'])) ? (int) $e['zeit'] : 0)
+                          + ((is_array($e) && !empty($e['udp'])) ? array('udp' => 1) : array());
+        }
+    }
+    return $aus;
+}
+
+/**
+ * Den Fehlwert fluechtig ueber den UDP-Eingang nachsenden (Entwurf 2.3 b, Regeln/07 :75): nach dem Abraeumen zeigt
+ * ein Virtueller Eingang -1 ("keine Aussage") bzw. "-", nicht seinen letzten Wert. 'publish', nie 'retain'.
+ * $voll: volle Themen. Rueckgabe: Zahl der abgesetzten Datagramme.
+ */
+function dk_mqtt_fehlwerte_senden(array $voll)
+{
+    $lage = dk_mqtt_lage();
+    if (!$lage['udpport'] || !$voll) { return 0; }
+    $s = @stream_socket_client('udp://127.0.0.1:' . $lage['udpport'], $eno, $estr, 2);
+    if (!$s) { return 0; }
+    $n = 0;
+    $erster = true;
+    foreach ($voll as $t) {
+        if (!$erster) { usleep(5000); }
+        $erster = false;
+        $zeile = 'publish ' . $t . ' ' . dk_mqtt_fehlwert($t);
+        if (@fwrite($s, $zeile) === strlen($zeile)) { $n++; }
+    }
+    fclose($s);
+    return $n;
+}
+
+/**
+ * Verschwundene bzw. abgewaehlte Container abraeumen (Entwurf 2.3 b/2.4, E-E8): faellig ist ein Name sofort, nach
+ * einem Fehlschlag hoechstens alle 10 Minuten (UDP-Rueckfall: jeden Takt). Kurze TCP-Sitzung mit Ruecklesen; bei
+ * "geleert"/"nichts" der Fehlwert fluechtig hinterher und der Name ist vergessen. Ohne Brokerzugang der UDP-Weg,
+ * dreimal in drei Takten, dann vergessen. Ab dem sechsten gescheiterten Versuch eine gebremste Zeile "bitte von Hand
+ * leeren". Rueckgabe: das fortgeschriebene Gedaechtnis.
+ */
+function dk_mqtt_weg_abraeumen(array $g, $prae)
+{
+    $jetzt = time();
+    $faellig = array();
+    foreach ($g['weg'] as $n => $e) {
+        $z = (int) $e['zeit'];
+        if (empty($e['udp']) && $z > 0 && $z <= $jetzt && $jetzt - $z < 600) { continue; }
+        $faellig[] = (string) $n;
+    }
+    if (!$faellig) { return $g; }
+    $je = array();
+    $voll = array();
+    foreach ($faellig as $n) {
+        foreach (array_keys(dk_container_felder()) as $f) {
+            $t = $prae . '/container/' . dk_container_abschnitt($n) . '/' . $f;
+            $je[$n][] = $t;
+            $voll[] = $t;
+        }
+    }
+    $r = dk_broker_leeren($voll);
+    if ($r['lage'] === 'geleert' || $r['lage'] === 'nichts') {
+        dk_mqtt_fehlwerte_senden($voll);
+        foreach ($faellig as $n) { unset($g['weg'][$n]); }
+        dk_log('MQTT: ' . count($faellig) . ' verschwundene Container abgeraeumt (' . implode(', ', $faellig) . '; '
+            . ($r['lage'] === 'geleert' ? 'vom Broker bestaetigt' : 'der Broker hielt keines zurueck')
+            . '), danach -1 fluechtig.');
+        return $g;
+    }
+    if ($r['lage'] === 'rest') {
+        $erledigt = array();
+        foreach ($faellig as $n) {
+            if (array_intersect($je[$n], $r['offen'])) {
+                $g['weg'][$n]['versuche'] = (int) $g['weg'][$n]['versuche'] + 1;
+                $g['weg'][$n]['zeit'] = $jetzt;
+                unset($g['weg'][$n]['udp']);
+                if ($g['weg'][$n]['versuche'] >= 6) {
+                    dk_log_gebremst('abraeumen_hand', 'MQTT: noch zurueckbehalten - bitte von Hand leeren: '
+                        . implode(', ', array_intersect($je[$n], $r['offen'])) . ' (mosquitto_pub -r -n -t <thema>)', 86400);
+                }
+            } else {
+                $erledigt = array_merge($erledigt, $je[$n]);
+                unset($g['weg'][$n]);
+            }
+        }
+        if ($erledigt) { dk_mqtt_fehlwerte_senden($erledigt); }
+        return $g;
+    }
+    // kein_broker, abgelehnt, zeit: der UDP-Weg (Regeln/07: ohne Ruecklesen nicht sicher) - drei Takte.
+    dk_mqtt_leer_senden($voll);
+    dk_mqtt_fehlwerte_senden($voll);
+    foreach ($faellig as $n) {
+        $v = (int) $g['weg'][$n]['versuche'] + 1;
+        if ($v >= 3) {
+            unset($g['weg'][$n]);
+            dk_log('MQTT: Container ' . $n . ' dreimal ueber den UDP-Eingang abgeraeumt (Broker ohne Zugang: '
+                . $r['lage'] . ') - ohne Ruecklesen; pruefen mit dem MQTT-Finder.');
+            continue;
+        }
+        $g['weg'][$n] = array('versuche' => $v, 'zeit' => $jetzt, 'udp' => 1);
+    }
+    return $g;
+}
+
+/**
+ * Kurze MQTT-Sitzung direkt am Broker (E-E8; Abschrift von fer_haus_sitzung() aus Ferien 1.2.28, vb_g19_fe_bau,
+ * geaendert nur Pfade und Client-Kennung): CONNECT, PUBLISH der Themen, SUBSCRIBE der zurueckzulesenden,
+ * zurueckbehaltene Werte bis SUBACK + 1 s, DISCONNECT.
+ *   $senden  Thema => array(Wert, retain) - eine leere Nutzlast nur mit retain (Abraeumen), ein Thema mit # oder + nie
+ *   $rueck   genaue Themen (kein # und kein +), deren zurueckbehaltene Werte gelesen werden
+ * Rueckgabe array('lage' => ok | kein_broker | abgelehnt | zeit, 'werte' => Thema => Wert (nur retained PUBLISH),
+ * 'gesendet' => n). MQTT 3.1.1 von Hand, QoS 0, saubere Sitzung, Client-Kennung 'dkleer<pid>', Keepalive 10 s,
+ * Verbindungsaufbau und CONNACK je 2 s, SUBACK 3 s mit jedem Rueckgabebyte < 0x80. Zugang aus general.json
+ * (Mqtt.Brokerhost/-port/-user/-pass); das Kennwort steht nur im CONNECT-Paket, nie in einem Protokoll und nie auf
+ * einer Kommandozeile.
+ */
+function dk_broker_sitzung(array $senden, array $rueck = array())
+{
+    $aus = array('lage' => 'kein_broker', 'werte' => array(), 'gesendet' => 0);
+    $p = dk_paths();
+    if ($p['home'] === '' || $p['general'] === '' || !is_file($p['general'])) { return $aus; }
+    $gen = json_decode((string) @file_get_contents($p['general']), true);
+    if (!is_array($gen)) { return $aus; }
+    $m = array();
+    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) { $m = $gen['Mqtt']; }
+    elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) { $m = $gen['mqtt']; }
+    if (!$m) { return $aus; }
+    $hol = function ($gross, $klein) use ($m) {
+        if (isset($m[$gross]) && is_scalar($m[$gross])) { return (string) $m[$gross]; }
+        return (isset($m[$klein]) && is_scalar($m[$klein])) ? (string) $m[$klein] : '';
+    };
+    $host = trim($hol('Brokerhost', 'brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport', 'brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser', 'brokeruser');
+    $kennwort = $hol('Brokerpass', 'brokerpass');
+
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 2);
+    $aus['lage'] = 'zeit';
+
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0; $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+    $bereit = function ($bis) use ($s) {
+        $rest = $bis - microtime(true);
+        if ($rest <= 0) { return false; }
+        $r = array($s); $w = null; $x = null;
+        $n = @stream_select($r, $w, $x, (int) floor($rest), (int) (($rest - floor($rest)) * 1000000));
+        return $n !== false && $n > 0;
+    };
+    $ende_sitzung = function ($lage) use ($s, &$aus) {
+        $aus['lage'] = $lage;
+        @fwrite($s, chr(0xE0) . chr(0));
+        fclose($s);
+        return $aus;
+    };
+
+    $flags = 0x02;                                  // saubere Sitzung
+    $nutz = $zk('dkleer' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 10);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) === false) {
+        fclose($s);
+        return $aus;
+    }
+    $ack = $bereit(microtime(true) + 2.0) ? $paket() : null;
+    if ($ack === null || ($ack[0] >> 4) !== 2 || strlen($ack[1]) < 2) { return $ende_sitzung('zeit'); }
+    if (ord($ack[1][1]) !== 0) { return $ende_sitzung('abgelehnt'); }
+
+    foreach ($senden as $t => $e) {
+        $e = array_values((array) $e);
+        $t = (string) $t;
+        $w = isset($e[0]) ? (string) $e[0] : '';
+        $r = !empty($e[1]);
+        if ($t === '' || strpbrk($t, "#+\0") !== false || ($w === '' && !$r)) { continue; }
+        $rumpf = $zk($t) . $w;
+        if (@fwrite($s, chr(0x30 | ($r ? 1 : 0)) . $laenge(strlen($rumpf)) . $rumpf) === false) {
+            return $ende_sitzung('zeit');
+        }
+        $aus['gesendet']++;
+    }
+
+    $soll = array();
+    foreach ($rueck as $t) {
+        $t = (string) $t;
+        if ($t !== '' && strpbrk($t, "#+\0") === false) { $soll[$t] = true; }
+    }
+    if ($soll) {
+        $verarbeiten = function ($pk) use (&$aus, $soll) {
+            if (strlen($pk[1]) < 2 || !($pk[0] & 1)) { return; }
+            $tl = unpack('n', substr($pk[1], 0, 2));
+            $t = substr($pk[1], 2, $tl[1]);
+            if (!isset($soll[$t])) { return; }
+            $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+            $aus['werte'][$t] = (string) substr($pk[1], $versatz);
+        };
+        $sub = pack('n', 1);
+        foreach (array_keys($soll) as $t) { $sub .= $zk($t) . chr(0); }
+        if (@fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub) === false) { return $ende_sitzung('zeit'); }
+        $bestaetigt = false;
+        $bis = microtime(true) + 3.0;
+        while (!$bestaetigt && $bereit($bis)) {
+            $pk = $paket();
+            if ($pk === null) { break; }
+            $art = $pk[0] >> 4;
+            if ($art === 9) {
+                /* Je Filter ein Rueckgabebyte; ab 0x80 abgelehnt (etwa durch eine ACL). */
+                $rc = (string) substr($pk[1], 2);
+                $nr = (strlen($pk[1]) >= 2) ? (int) unpack('n', substr($pk[1], 0, 2))[1] : 0;
+                if ($nr !== 1 || strlen($rc) !== count($soll)) { return $ende_sitzung('abgelehnt'); }
+                for ($i = 0; $i < strlen($rc); $i++) {
+                    if (ord($rc[$i]) >= 0x80) { return $ende_sitzung('abgelehnt'); }
+                }
+                $bestaetigt = true;
+            } elseif ($art === 3) {
+                $verarbeiten($pk);
+            }
+        }
+        if (!$bestaetigt) { return $ende_sitzung('zeit'); }
+        $bis = microtime(true) + 1.0;
+        while ($bereit($bis)) {
+            $pk = $paket();
+            if ($pk === null) { break; }
+            if (($pk[0] >> 4) === 3) { $verarbeiten($pk); }
+        }
+    }
+    return $ende_sitzung('ok');
+}
+
+/**
+ * Eigene retained Themen abraeumen (E-E8; Bauart fer_haus_leeren()): erst zuruecklesen; ist nichts belegt ->
+ * 'nichts'. Sonst PUBLISH mit Retain-Bit und LEERER Nutzlast fuer die belegten Themen und in derselben Sitzung
+ * zuruecklesen, bis zu drei Runden. Nur die uebergebenen genauen Themen, nie "#"/"+". Rueckgabe array('lage' =>
+ * geleert | nichts | rest | kein_broker | abgelehnt | zeit, 'offen' => belegte Themen).
+ */
+function dk_broker_leeren(array $voll, $runden = 3)
+{
+    $th = array();
+    foreach ($voll as $t) {
+        $t = (string) $t;
+        if ($t !== '' && strpbrk($t, "#+\0 ") === false && !in_array($t, $th, true)) { $th[] = $t; }
+    }
+    if (!$th) { return array('lage' => 'nichts', 'offen' => array()); }
+    $belegt = function ($w) {
+        $o = array();
+        foreach ($w as $t => $v) { if ((string) $v !== '') { $o[] = $t; } }
+        return $o;
+    };
+    $r = dk_broker_sitzung(array(), $th);
+    if ($r['lage'] !== 'ok') { return array('lage' => $r['lage'], 'offen' => array()); }
+    $offen = $belegt($r['werte']);
+    if (!$offen) { return array('lage' => 'nichts', 'offen' => array()); }
+    for ($i = 1; $i <= max(1, (int) $runden); $i++) {
+        $senden = array();
+        foreach ($offen as $t) { $senden[$t] = array('', true); }
+        $r = dk_broker_sitzung($senden, $th);
+        if ($r['lage'] !== 'ok') { continue; }
+        $offen = $belegt($r['werte']);
+        if (!$offen) { return array('lage' => 'geleert', 'offen' => array()); }
+    }
+    return array('lage' => 'rest', 'offen' => $offen);
+}
+
+/**
+ * Feldtabelle der Themen (Entwurf 2.2/2.5): Werte, Fehlwert, Bauform, V2-Kennzeichen (N = anhaken mit Noncached,
+ * H = anhaken, '' = nicht im Musterprojekt), Nummer im Musterprojekt. '*' = Containername. EINE Quelle fuer
+ * Namenstabelle, V2-Hakenliste und Bausteinliste.
+ */
+function dk_mqtt_feldtabelle()
+{
+    return array(
+        'status/ok'            => array('th' => 'TH_OK',        'werte' => '0/1',       'fw' => null, 'v2' => 'N', 'nr' => 20),
+        'status/zaehler'       => array('th' => 'TH_ZAEHLER',   'werte' => '0-999',     'fw' => null, 'v2' => 'H', 'nr' => 6),
+        'status/ts'            => array('th' => 'TH_TS',        'werte' => 'Unix',      'fw' => null, 'v2' => '',  'nr' => 0),
+        'status/gesamt'        => array('th' => 'TH_GESAMT',    'werte' => '0-999',     'fw' => '-1', 'v2' => 'H', 'nr' => 12),
+        'status/laeuft'        => array('th' => 'TH_LAEUFT',    'werte' => '0-999',     'fw' => '-1', 'v2' => 'H', 'nr' => 13),
+        'status/gestoppt'      => array('th' => 'TH_GESTOPPT',  'werte' => '0-999',     'fw' => '-1', 'v2' => 'H', 'nr' => 14),
+        'status/ausfall'       => array('th' => 'TH_AUSFALL',   'werte' => '0-999',     'fw' => '-1', 'v2' => 'H', 'nr' => 1),
+        'status/pausiert'      => array('th' => 'TH_PAUSIERT',  'werte' => '0-999',     'fw' => '-1', 'v2' => 'H', 'nr' => 15),
+        'status/ungesund'      => array('th' => 'TH_UNGESUND',  'werte' => '0-999',     'fw' => '-1', 'v2' => 'H', 'nr' => 16),
+        'status/fehlt'         => array('th' => 'TH_FEHLT',     'werte' => '0-999',     'fw' => '-1', 'v2' => 'H', 'nr' => 3),
+        'status/schleife'      => array('th' => 'TH_SCHLEIFE',  'werte' => '0-999',     'fw' => '-1', 'v2' => 'H', 'nr' => 17),
+        'status/portainer'     => array('th' => 'TH_PORTAINER', 'werte' => '0/1',       'fw' => '-1', 'v2' => 'H', 'nr' => 18),
+        'platte/images_mb'     => array('th' => 'TH_IMAGES',    'werte' => 'MB',        'fw' => '-1', 'v2' => '',  'nr' => 0),
+        'platte/freigebbar_mb' => array('th' => 'TH_FREIGEBBAR', 'werte' => 'MB',       'fw' => '-1', 'v2' => '',  'nr' => 0),
+        'platte/frei_mb'       => array('th' => 'TH_FREI',      'werte' => 'MB',        'fw' => '-1', 'v2' => 'H', 'nr' => 19),
+        'container/*/laeuft'   => array('th' => 'TH_C_LAEUFT',  'werte' => '0/1',       'fw' => '-1', 'v2' => 'H', 'nr' => 30),
+        'container/*/gesund'   => array('th' => 'TH_C_GESUND',  'werte' => '0-3',       'fw' => '-1', 'v2' => 'H', 'nr' => 31),
+        'container/*/stand'    => array('th' => 'TH_C_STAND',   'werte' => 'Text',      'fw' => '-',  'v2' => '',  'nr' => 0),
+        'container/*/oom'      => array('th' => 'TH_C_OOM',     'werte' => '0/1',       'fw' => '-1', 'v2' => 'H', 'nr' => 40),
+    );
+}
+
+/**
+ * Die Container der Namenstabelle (dynamisch je Wachliste, Entscheidung 2): die ausdrueckliche Wachliste, sonst die
+ * gefundenen Container, ohne Docker die zuletzt gemeldeten aus dem Gedaechtnis - dieselben wie dk_mqtt_themen().
+ */
+function dk_mqtt_tabellen_container($cfg = null)
+{
+    $cfg = is_array($cfg) ? $cfg : dk_config();
+    if ($cfg['wachliste']) { return array_values($cfg['wachliste']); }
+    list($ok) = dk_zustand();
+    if ($ok) {
+        $n = array();
+        foreach (dk_container() as $c) { $n[] = $c['name']; }
+        return $n;
+    }
+    return dk_mqtt_gedaechtnis()['container'];
+}
+
+/**
+ * Die Namenstabelle (Entwurf 2.5): je Thema eine Zeile mit Gateway-Name, Thema, Bauform (Texteingang nur bei
+ * stand), Werten, Fehlwert, retained, V2-Kennzeichen, Nummer im Musterprojekt (Containerzeilen nur fuer portainer)
+ * und Bedeutung (Schluessel MQTT.TH_*). Die Containerzeilen kommen je Container der Wachliste; dazu die zwei Themen
+ * der Befehlsbruecke (quelle 'bruecke': status/befehle, befehl/neustart/quittung), die dk_mqtt_themen() nicht kennt.
+ */
+function dk_mqtt_namenstabelle($cfg = null)
+{
+    $cfg = is_array($cfg) ? $cfg : dk_config();
+    $prae = $cfg['mqtt_praefix'];
+    $ft = dk_mqtt_feldtabelle();
+    $aus = array();
+    $zeile = function ($thema, $f, $name_c) use ($prae) {
+        $retain = dk_mqtt_retain_eintrag($thema) === 1;
+        $nr = (int) $f['nr'];
+        if ($name_c !== null && $name_c !== 'portainer') { $nr = 0; }
+        return array('name' => dk_gateway_name($prae, $thema), 'thema' => $prae . '/' . $thema, 'kurz' => $thema,
+                     'text' => substr($thema, -6) === '/stand', 'werte' => $f['werte'], 'fw' => $f['fw'],
+                     'retain' => $retain, 'v2' => $f['v2'], 'nr' => $nr, 'th' => $f['th'], 'container' => $name_c,
+                     'quelle' => 'takt');
+    };
+    foreach ($ft as $thema => $f) {
+        if (strpos($thema, '*') !== false) { continue; }
+        $aus[] = $zeile($thema, $f, null);
+    }
+    foreach (dk_mqtt_tabellen_container($cfg) as $n) {
+        foreach ($ft as $thema => $f) {
+            if (strpos($thema, '*') === false) { continue; }
+            $aus[] = $zeile(str_replace('*', dk_container_abschnitt($n), $thema), $f, $n);
+        }
+    }
+    foreach (array('status/befehle' => array('TH_BEFEHLE', '1/0/-1', 'H'),
+                   'befehl/neustart/quittung' => array('TH_QUITTUNG', 'Text', '')) as $thema => $b) {
+        $aus[] = array('name' => dk_gateway_name($prae, $thema), 'thema' => $prae . '/' . $thema, 'kurz' => $thema,
+                       'text' => $b[1] === 'Text', 'werte' => $b[1], 'fw' => null, 'retain' => false, 'v2' => $b[2],
+                       'nr' => 0, 'th' => $b[0], 'container' => null, 'quelle' => 'bruecke');
+    }
+    return $aus;
+}
+
+/** Die V2-Hakenliste (Reiter MQTT): alle Zeilen der Namenstabelle mit H oder N - aus derselben Funktion. */
+function dk_v2_haken($cfg = null)
+{
+    $aus = array();
+    foreach (dk_mqtt_namenstabelle($cfg) as $z) {
+        if ($z['v2'] === 'H' || $z['v2'] === 'N') { $aus[] = $z; }
+    }
+    return $aus;
+}
+
+/**
+ * Pruefzeile im Reiter Test (Entwurf 2.5, Regeln/07 :907): jeder Name entsteht aus einem gesendeten Thema, und jedes
+ * gesendete Thema steht in der Namenstabelle - beide Richtungen. Die Themen der Befehlsbruecke zaehlen nicht mit.
+ * Rueckgabe array(gesendet ohne Tabelleneintrag, Tabelle ohne gesendetes Thema, Zahl der Namen).
+ */
+function dk_namen_pruefung($cfg = null)
+{
+    $cfg = is_array($cfg) ? $cfg : dk_config();
+    $gesendet = array();
+    foreach (array_keys(dk_mqtt_themen()) as $t) { $gesendet[] = dk_gateway_name($cfg['mqtt_praefix'], $t); }
+    $tabelle = array();
+    foreach (dk_mqtt_namenstabelle($cfg) as $z) {
+        if ($z['quelle'] === 'takt') { $tabelle[] = $z['name']; }
+    }
+    return array(array_values(array_diff($gesendet, $tabelle)), array_values(array_diff($tabelle, $gesendet)),
+                 count($tabelle));
+}
+
+/* ---------------- D19/E2: Upgrade-Marke ---------------- */
+
+/**
+ * Lage der Upgrade-Marke (D19, E2): array(liegt, Zeit, Alter in s). Zeit = Inhalt (Unix-Zeit aus preupgrade.sh),
+ * sonst die Aenderungszeit. Eine Marke aus der Zukunft hat Alter -1 (sie gilt nicht, Hausregel).
+ */
+function dk_marke_lage()
+{
+    $f = dk_paths()['marke'];
+    clearstatcache(true, $f);
+    if (!@is_file($f)) { return array(false, 0, 0); }
+    $t = trim((string) @file_get_contents($f));
+    $zeit = preg_match('/^[0-9]{1,12}\z/', $t) ? (int) $t : (int) @filemtime($f);
+    $alter = ($zeit > 0 && $zeit <= time()) ? time() - $zeit : -1;
+    return array(true, $zeit, $alter);
+}
+
+/* ---------------- V3: Container-Neustart (Entwurf 3.1) ---------------- */
+
+/** Brokerport und UDP-Eingang des Gateways aus general.json (ohne Angabe 1883 bzw. 11884) - fester Schutz (E-E2). */
+function dk_schutzports()
+{
+    $p = dk_paths();
+    $broker = 1883;
+    $udp = 11884;
+    if ($p['general'] !== '' && @is_file($p['general'])) {
+        $d = json_decode((string) @file_get_contents($p['general']), true);
+        $m = (is_array($d) && isset($d['Mqtt']) && is_array($d['Mqtt'])) ? $d['Mqtt'] : array();
+        if (isset($m['Brokerport']) && (int) $m['Brokerport'] > 0) { $broker = (int) $m['Brokerport']; }
+        if (isset($m['Udpinport']) && (int) $m['Udpinport'] > 0) { $udp = (int) $m['Udpinport']; }
+    }
+    return array_values(array_unique(array($broker, $udp)));
+}
+
+/** Sperre je Container (Name => Unix-Zeit des letzten Neustarts). */
+function dk_neustart_sperre_lesen()
+{
+    $aus = array();
+    foreach (dk_json_lesen(dk_paths()['neustart_sperre']) as $n => $t) {
+        if (dk_name_gueltig((string) $n) && is_int($t)) { $aus[(string) $n] = $t; }
+    }
+    return $aus;
+}
+
+function dk_neustart_sperre_setzen($name)
+{
+    $p = dk_paths();
+    $s = dk_neustart_sperre_lesen();
+    $jetzt = time();
+    foreach ($s as $n => $t) { if ($t > $jetzt || $jetzt - $t > 86400) { unset($s[$n]); } }
+    $s[$name] = $jetzt;
+    if (!@is_dir($p['datadir'])) { @mkdir($p['datadir'], 0755, true); }
+    return dk_json_schreiben($p['neustart_sperre'], $s, 0644);
+}
+
+/**
+ * Darf dieser Container neu gestartet werden? (Entwurf 3.1, Pruefreihenfolge; E-E2, E-E4, E-E6.)
+ * Aus Loxone ($quelle 'mqtt') gilt alles; aus der Oberflaeche ('oberflaeche') nur Name, eigener Portainer bzw.
+ * eigenes Label und "vorhanden" - der Anwender entscheidet selbst, die Rueckfrage warnt.
+ *   $liste       dk_container(true)
+ *   $eigen       Name des eigenen Portainer oder null
+ *   $schutzports Brokerport und UDP-Eingang des Gateways
+ *   $sperre      Name => Unix-Zeit des letzten Neustarts
+ * Rueckgabe array(ok, grund) - grund ASCII mit Name (fuer Quittung und Protokoll), ohne Pfad.
+ */
+function dk_neustart_pruefen($name, array $cfg, array $liste, $eigen, array $schutzports, array $sperre, $jetzt,
+                             $quelle = 'mqtt', $sperre_s = 600)
+{
+    if (!dk_name_gueltig($name)) { return array(false, 'Name ungueltig'); }
+    $mqtt = ($quelle === 'mqtt');
+    if ($mqtt && (empty($cfg['befehle_mqtt_ein']) || empty($cfg['mqtt_aktiv']) || empty($cfg['befehle_mqtt_steuern']))) {
+        return array(false, 'Steuerfreigabe aus');
+    }
+    if ($mqtt) {
+        $erlaubt = (isset($cfg['neustart_erlaubt']) && is_array($cfg['neustart_erlaubt'])) ? $cfg['neustart_erlaubt'] : array();
+        if (!in_array($name, $erlaubt, true)) { return array(false, $name . ' nicht freigegeben (Neustartliste)'); }
+        if (!in_array($name, (array) $cfg['wachliste'], true)) { return array(false, $name . ' nicht auf der Wachliste'); }
+    }
+    if ($eigen !== null && $name === $eigen) { return array(false, $name . ' ist der eigene Portainer'); }
+    $c = null;
+    foreach ($liste as $x) { if ($x['name'] === $name) { $c = $x; break; } }
+    if ($c === null) { return array(false, $name . ' nicht vorhanden'); }
+    if (isset($c['lb_ordner']) && is_string($c['lb_ordner']) && $c['lb_ordner'] === dk_paths()['plugin']) {
+        return array(false, $name . ' gehoert Docker NG');
+    }
+    if ($mqtt) {
+        $schutz = dk_neustart_schutz($c, $schutzports);
+        if ($schutz !== '') { return array(false, $name . ' ' . $schutz); }
+        if (isset($sperre[$name]) && (int) $sperre[$name] <= $jetzt && $jetzt - (int) $sperre[$name] < $sperre_s) {
+            return array(false, $name . ' gesperrt noch ' . (int) ceil(($sperre_s - ($jetzt - (int) $sperre[$name])) / 60) . ' min');
+        }
+    }
+    return array(true, '');
+}
+
+/**
+ * Fester Broker-/Gateway-Schutz (E-E2, nicht abschaltbar): ein Container, der den Brokerport oder den UDP-Eingang
+ * des Gateways auf dem Host veroeffentlicht, oder ein Broker-Abbild (Netzwerk host hat keine Portspalte). Rueckgabe
+ * '' = kein Schutzfall, sonst der Grund (ASCII). Auch fuer das gesperrte Kaestchen in der Oberflaeche.
+ */
+function dk_neustart_schutz(array $c, array $schutzports)
+{
+    foreach ($schutzports as $sp) {
+        if ($sp > 0 && preg_match('/(^|[,\s])[0-9a-fA-F.:\[\]]*:' . (int) $sp . '->/', (string) $c['ports'])) {
+            return 'traegt Port ' . (int) $sp . ' (Broker/Gateway)';
+        }
+    }
+    if (preg_match('#(^|/)(eclipse-mosquitto|mosquitto|emqx|vernemq|hivemq[a-z0-9-]*|nanomq)(:|@|\z)#i', (string) $c['image'])) {
+        return 'ist ein MQTT-Broker (Abbild)';
+    }
+    return '';
+}
+
+/**
+ * Einen Container neu starten - EINE Stelle fuer die Befehlsbruecke ('mqtt', Befehl dockerng/befehl/neustart) und
+ * den Knopf "Neu starten" der Containertabelle ('oberflaeche'). Docker wird frisch gefragt (N1). Neu gestartet wird
+ * synchron: docker restart --time 10, Frist 40 s (E-E16; die Quittung sagt, was passiert ist). Jeder Neustart setzt
+ * die Sperre des Containers (auch aus der Oberflaeche - damit Loxone nicht gleich hinterher startet); geprueft wird
+ * sie nur fuer Loxone. Ein Neustart von Hand erhoeht RestartCount nicht (am Geraet 06.09.2026) - keine falsche
+ * Neustartschleife. Rueckgabe array('ok' => bool, 'grund' => ASCII-Text).
+ */
+function dk_befehl_neustart($name, $quelle)
+{
+    $quelle = ($quelle === 'oberflaeche') ? 'oberflaeche' : 'mqtt';
+    $wer = ($quelle === 'mqtt') ? 'Loxone' : 'Oberflaeche';
+    $cfg = ($quelle === 'mqtt') ? dk_config_neu() : dk_config();
+    if (!dk_name_gueltig($name)) {
+        dk_log('Neustart (' . $wer . '): abgelehnt - Name ungueltig.');
+        return array('ok' => false, 'grund' => 'Name ungueltig');
+    }
+    if (dk_bin() === '') { return array('ok' => false, 'grund' => 'kein Docker'); }
+    list($ok) = dk_zustand(true);
+    if (!$ok) {
+        dk_log('Neustart (' . $wer . '): ' . $name . ' abgelehnt - Docker antwortet nicht.');
+        return array('ok' => false, 'grund' => 'Docker antwortet nicht');
+    }
+    $liste = dk_container(true);
+    list($eok, $eigen) = dk_eigener_container(true);
+    if (!$eok) {
+        dk_log('Neustart (' . $wer . '): ' . $name . ' abgelehnt - der eigene Portainer ist nicht pruefbar.');
+        return array('ok' => false, 'grund' => 'eigener Portainer nicht pruefbar');
+    }
+    list($darf, $grund) = dk_neustart_pruefen($name, $cfg, $liste, $eigen !== null ? $eigen[0] : null,
+                                             dk_schutzports(), dk_neustart_sperre_lesen(), time(), $quelle);
+    if (!$darf) {
+        dk_log('Neustart (' . $wer . '): abgelehnt - ' . $grund . '.');
+        return array('ok' => false, 'grund' => $grund);
+    }
+    list($aus, $fehler, $code) = dk_ausfuehren('docker restart --time 10 -- ' . escapeshellarg($name), 40);
+    dk_neustart_sperre_setzen($name);
+    dk_zustand(true);
+    dk_container(true);
+    if ($code !== 0) {
+        $zeile = trim((string) strtok((string) $fehler, "\n"));
+        dk_log('Neustart (' . $wer . '): ' . $name . ' gescheitert (Rueckgabe ' . $code . '): '
+            . ($zeile !== '' ? $zeile : 'ohne Meldung'));
+        return array('ok' => false, 'grund' => $name . ' gescheitert (Rueckgabe ' . $code . ')');
+    }
+    dk_log('Neustart (' . $wer . '): ' . $name . ' - ausgefuehrt.');
+    return array('ok' => true, 'grund' => $name . ' neu gestartet');
+}
+
+/* ---------------- V3: Befehlsbruecke (Stammfassung 1.0.1, Entwurf 3.1) ---------------- */
+
+/**
+ * Die Befehlsbruecke als Bibliothek laden (BB_NUR_LADEN; Stammfassung Werkzeuge/gemeinsam/befehlsbruecke.php,
+ * byte-gleich unter bin/; Bauart fer_bruecke_laden()). Installiert liegt sie unter bin/plugins/<ordner>/, im
+ * Arbeitsordner unter bin/ neben webfrontend/. Rueckgabe true, wenn bb_waechter() danach da ist.
+ */
+function dk_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) { return true; }
+    $p = dk_paths();
+    $kand = array();
+    if ($p['home'] !== '') { $kand[] = $p['home'] . '/bin/plugins/' . $p['plugin'] . '/befehlsbruecke.php'; }
+    $kand[] = dirname(dirname(__DIR__)) . '/bin/befehlsbruecke.php';
+    foreach ($kand as $k) {
+        if (is_file($k)) {
+            if (!defined('BB_NUR_LADEN')) { define('BB_NUR_LADEN', true); }
+            require_once $k;
+            return function_exists('bb_waechter');
+        }
+    }
+    return false;
+}
+
+/** Die Befehlsliste der Bruecke (bb_liste(): EINE Quelle fuer Reiter Einbindung und MQTT). array(Liste|null, Fehler). */
+function dk_bruecke_liste()
+{
+    if (!dk_bruecke_laden()) { return array(null, dk_t('BEFEHL.T_NICHT_DA')); }
+    list($z, $fehler) = bb_zuordnung_laden();
+    if ($z === null) { return array(null, $fehler); }
+    $GLOBALS['bb_zuordnung'] = $z;
+    list($fehl) = bb_zuordnung_pruefen($z);
+    if ($fehl) { return array(null, $fehl[0]); }
+    return array(bb_liste($z, bb_einstellungen($z)), '');
+}
+
+/**
+ * Die Bruecke sofort schalten (Reiter MQTT nach dem Speichern, Zurueckspielen; Bauart fer_bruecke_schalten()):
+ * soll sie laufen (Befehle ueber MQTT annehmen und MQTT an), befehlsbruecke.sh start; sonst stop, wenn sie laeuft.
+ * Rueckgabe array(rc oder null = nichts zu tun, 'start'|'stop'|'', Ausgabe).
+ */
+function dk_bruecke_schalten($cfg = null)
+{
+    $cfg = is_array($cfg) ? $cfg : dk_config();
+    if (!dk_bruecke_laden()) { return array(1, '', dk_t('BEFEHL.T_NICHT_DA')); }
+    $p = bb_pfade();
+    if (!$p) { return array(1, '', 'keine LoxBerry-Installation erkannt'); }
+    $soll = !empty($cfg['befehle_mqtt_ein']) && !empty($cfg['mqtt_aktiv']);
+    if ($soll) {
+        list($rc, $aus) = bb_sh($p, 'start');
+        return array($rc, 'start', $aus);
+    }
+    if (!bb_dienste()) { return array(null, '', ''); }
+    list($rc, $aus) = bb_sh($p, 'stop');
+    return array($rc, 'stop', $aus);
+}
+
+/**
+ * Lage der Befehlsbruecke fuer den Reiter Test (Bauart fer_bruecke_lage()): Dienst laeuft (argumentweise),
+ * zustand.json juenger als 180 s, Abo steht. Rueckgabe array(true|false|null, Text) - null = aus (Haken).
+ */
+function dk_bruecke_lage()
+{
+    if (!dk_bruecke_laden()) { return array(false, dk_t('BEFEHL.T_NICHT_DA')); }
+    if (!bb_pfade()) { return array(null, dk_t('BEFEHL.T_KEIN_BAUM')); }
+    list($soll, $grund) = bb_soll_ermitteln();
+    if ($soll === 1) { return array(null, dk_t('BEFEHL.T_AUS')); }
+    if ($soll !== 0) { return array(false, sprintf(dk_t('BEFEHL.T_DEFEKT'), $grund)); }
+    $zu = bb_zustand_lesen();
+    $pids = bb_dienste();
+    $alter = (is_array($zu) && isset($zu['ts'])) ? time() - (int) $zu['ts'] : null;
+    if ($pids && $alter !== null && $alter <= BB_WACHE_GRENZE && !empty($zu['abo'])) {
+        $zl = (isset($zu['zaehler']) && is_array($zu['zaehler'])) ? $zu['zaehler'] : array();
+        $txt = sprintf(dk_t('BEFEHL.T_LAEUFT'), implode(' ', $pids), is_string($zu['abo']) ? $zu['abo'] : '-',
+            isset($zl['angenommen']) ? (int) $zl['angenommen'] : 0, isset($zl['abgelehnt']) ? (int) $zl['abgelehnt'] : 0);
+        $lz = (isset($zu['letzter']) && is_array($zu['letzter'])) ? $zu['letzter'] : null;
+        if ($lz !== null && isset($lz['name'])) {
+            $txt .= ' ' . sprintf(dk_t('BEFEHL.T_LETZTER'), (string) $lz['name'],
+                isset($lz['ergebnis']) ? (string) $lz['ergebnis'] : '-',
+                isset($lz['zeit']) ? max(0, time() - (int) $lz['zeit']) : 0);
+        } else {
+            $txt .= ' ' . dk_t('BEFEHL.T_KEINER');
+        }
+        return array(true, $txt);
+    }
+    $wie = !$pids ? 'kein Dienst' : ($alter === null ? 'kein Zustand' : ($alter > BB_WACHE_GRENZE
+        ? 'Zustand ' . $alter . ' s alt' : 'ohne Abo' . (is_array($zu) && !empty($zu['fehler']) ? ': ' . $zu['fehler'] : '')));
+    return array(false, sprintf(dk_t('BEFEHL.T_STEHT'), $wie));
 }

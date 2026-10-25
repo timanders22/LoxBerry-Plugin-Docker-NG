@@ -3,9 +3,45 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.18 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.19 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.19
+
+Gruppe 21 (Entscheidungen 1–4 des Hausherrn vom 25.10.2026, Entwurf mit den Empfehlungen E-E1 bis E-E20).
+
+* **Werte über das MQTT-Gateway in Virtuelle Eingänge.** Der Reiter *Einbindung in Loxone* nennt je Wert den Namen,
+  den das Gateway vergibt (Vorsatz + Thema, `/`, `%` und Leerzeichen werden zu `_`), mit Kopierknopf, Bauform,
+  Fehlwert und Nummer im Musterprojekt; die Containerzeilen folgen der Wachliste. Der Reiter *MQTT* zeigt den
+  Gateway-Namen je Thema und unter Gateway V2 die Hakenliste (Noncached nur `status/ok`). Neue Anlagen senden ab
+  Werk über MQTT; eine aktualisierte Anlage behält ihre Einstellung (ohne Schlüssel – Stand vor 1.3.0 – bleibt MQTT
+  aus), das Installationsprotokoll sagt es.
+* **-1 statt stehender Werte:** Antwortet Docker nicht, melden die Zähl-, Portainer- und Containerthemen `-1` (keine
+  Aussage; `stand` „-“) statt des letzten Werts; `platte/*` ohne frischen Messwert `-1`. Verschwundene Container werden
+  im Broker abgeräumt – in einer kurzen Sitzung mit Rücklesen (ohne Brokerzugang dreimal über den UDP-Eingang) – und
+  bekommen danach einmal `-1`. Das MQTT-Gedächtnis und die Vormerkung liegen neben dem Datenordner und überstehen
+  ein Update; MQTT aus vergisst nichts mehr; die Deinstallation räumt auch Wachliste und aktuelle Container ab.
+* **Neu `container/<Name>/oom`** (1 = zuletzt vom System wegen Speichermangel beendet), dazu ein Zusatz in der
+  Containertabelle, der Befund „OOM:<Namen>“ (auch als Ansage) und im alten HTTP-Weg `O_<Name>` hinten.
+* **Container-Neustart aus Loxone** über die gemeinsame Befehlsbrücke 1.0.1: ein Thema `dockerng/befehl/neustart`
+  mit dem Containernamen; zwei Haken im Reiter *MQTT* (ab Werk aus), Spalte *Neustart aus Loxone* in der
+  Containertabelle (ab Werk leer, nur ausdrückliche Wachliste); nie der eigene Portainer, nie ein Container mit
+  Brokerport oder UDP-Eingang des Gateways, nie ein Broker-Abbild; 10 Minuten Sperre je Container; synchron mit
+  echter Quittung. Je Zeile ein oranger Knopf *Neu starten* mit Rückfrage. Steuerfreigabe und Neustartliste kommen
+  nie aus einer Sicherung; Sicherungen aus 1.3.18 bleiben zurückspielbar.
+* **HTTP-Endpunkt hinter einem Haken** (Reiter Einbindung, „Bestehende Anlagen“): nach einem Update an, bei einer
+  Neuinstallation aus; aus antwortet er 403 `ERR=ENDPUNKT_AUS`. Der Reiter Test zeigt die Endpunkt-Knöpfe nur bei an.
+* **Plugin-Spalte als Link** auf die Seite des Plugins, wenn es eine Oberfläche hat.
+* **Sprachausgabe 1.1.4** mit Sonos4Lox und SonoX (SonoX schickt Ansagetexte an Google).
+* **Korrekturen:** erster Takt mit Docker am Ende der Erstinstallation (D1); Wurzelprüfung der Hakenskripte in
+  Hausform, Abbruch ohne Löschen (D2/D15); Zurückspielen über Nebendatei (D4); `.gitattributes` `* -text` (D6);
+  strenge Wurzel und Archivschutz in der Bibliothek (D9); frische Abfrage der Details (D13); Protokoll mit Sperre
+  (D14); Hilfelink auf die Wiki-Seite (D16); eine liegengebliebene Upgrade-Marke hält den Takt nur noch eine Stunde
+  an, Reiter Test und Befund nennen sie (D19); Kongruenzprobe in beiden Richtungen (D20); `vorgang.err` gekappt und
+  angezeigt (D21); Prüfzeile der Ansage nur im angeforderten Reiter Test (D22); eine Legende je Reiter.
+* **Bild** der Seite „Docker NG“ im Reiter Einbindung neu (Musterprojekt mit den MQTT-Eingängen, Taste und Befehl).
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät und nicht in Loxone Config angesehen.
 
 ## Neu in 1.3.18
 

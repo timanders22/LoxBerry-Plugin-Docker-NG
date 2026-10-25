@@ -9,13 +9,27 @@
 # Hier passiert nur, was ohne root-Rechte geht. Docker und Portainer richtet
 # postroot.sh ein.
 
-ARGV3=$3
-ARGV5=$5
-PFOLDER="${ARGV3:-dockerng}"
-BASE="${ARGV5:-$LBHOMEDIR}"
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+# D2/D15 (1.3.19, Hausform Ultraschall 1.2.18 us_ist_wurzel): Wurzel ist, was config/plugins UND data/plugins UND
+# config/system/general.json traegt (Regeln/06) - gefragt werden $5 (kommt vom Installer immer) und LBHOMEDIR. Bis
+# 1.3.18 stand hier ein Rueckfall $SELF/../.. - die Skripte laufen aus dem Arbeitsordner des Installers, zwei Ebenen
+# darueber liegt keine Wurzel (toter, falsch berechneter Zweig). Ohne Wurzel wird abgebrochen, ohne etwas anzufassen;
+# ein unbrauchbarer Ordnername faellt nie still auf 'dockerng' zurueck.
+dk_ist_wurzel() {
+    [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ] \
+        && [ -f "$1/config/system/general.json" ]
+}
+PFOLDER="${3:-}"
+case "$PFOLDER" in
+    ''|*[!A-Za-z0-9_-]*) echo "<FAIL> Ordnername '$PFOLDER' unbrauchbar - es wird nichts angefasst."; exit 1 ;;
+esac
+BASE=""
+for dk_k in "${5:-}" "${LBHOMEDIR:-}"; do
+    if dk_ist_wurzel "$dk_k"; then BASE="$dk_k"; break; fi
+done
+if [ -z "$BASE" ]; then
+    echo "<FAIL> Keine LoxBerry-Wurzel (Argument 5: '${5:-}', LBHOMEDIR: '${LBHOMEDIR:-}') - verlangt sind"
+    echo "<FAIL> config/plugins, data/plugins und config/system/general.json. Es wird nichts angefasst."
+    exit 1
 fi
 
 PCONFIG="$BASE/config/plugins/$PFOLDER"
@@ -73,11 +87,13 @@ if [ "$UPGRADE" = "1" ] && [ -f "$BK" ]; then
             echo "<INFO> Die vorgefundene Konfiguration war unbrauchbar und liegt jetzt"
             echo "<INFO> zur Ansicht unter $CF.kaputt"
         fi
-        if cp -p "$BK" "$CF" && chmod 600 "$CF"; then
+        # D4 (1.3.19): ueber eine Nebendatei und mv wie preupgrade.sh - nie eine halb kopierte Konfiguration.
+        if cp -p "$BK" "$CF.neu" && chmod 600 "$CF.neu" && mv -f "$CF.neu" "$CF"; then
             echo "<OK> Konfiguration aus der Sicherung wiederhergestellt."
             echo "<INFO> Das Merkwort fuer den Endpunkt bleibt damit gueltig - die"
             echo "<INFO> Adressen im Miniserver muessen nicht angefasst werden."
         else
+            rm -f "$CF.neu"
             echo "<FAIL> Die Sicherung liess sich nicht zurueckspielen: $BK"
         fi
     fi
@@ -138,7 +154,11 @@ if [ -f "$PBIN2/dockerng_takt.php" ]; then
     # auch dann, wenn zustand.json gar nicht geschrieben war (gemessen).
     (cd "$PBIN2" && php dockerng_takt.php >/dev/null 2>&1)
     TRC=$?
-    if [ "$TRC" = "0" ]; then
+    if [ "$TRC" = "0" ] && grep -q '"ok": 0' "$PDATA/zustand.json" 2>/dev/null; then
+        # D1 (1.3.19): bei der Erstinstallation laeuft dieser Takt ohne Docker (postroot.sh richtet es erst ein).
+        echo "<INFO> Der Minutentakt lief einmal (Zustandsdatei geschrieben); Docker antwortet noch nicht - postroot.sh"
+        echo "<INFO> richtet es gleich ein, der erste Takt mit Docker folgt am Ende der Installation."
+    elif [ "$TRC" = "0" ]; then
         echo "<OK> Der Minutentakt ist einmal durchgelaufen (Zustandsdatei geschrieben)."
     elif [ "$TRC" = "3" ]; then
         echo "<INFO> Der Minutentakt lief gerade aus dem Cron - er wurde nicht doppelt ausgefuehrt."
@@ -153,6 +173,19 @@ if [ -f "$PBIN2/dockerng_takt.php" ]; then
     chown -R loxberry:loxberry "$PDATA" 2>/dev/null
 else
     echo "<FAIL> $PBIN2/dockerng_takt.php fehlt - der Minutentakt kann nicht laufen."
+fi
+
+# ---------- Befehlsbruecke (V3, 1.3.19; Bauart Ferien 1.2.28 postinstall) ----------
+# Die Marke ist weg (die Bruecke startet nicht, solange eine frische Marke liegt). befehlsbruecke.sh startet nur mit
+# dem Haken "Befehle ueber MQTT annehmen" (ab Werk aus) und misst danach, ob der Dienst laeuft.
+BBSH="$PBIN2/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    BB_AUS=$(timeout 40 bash "$BBSH" start 2>&1 | head -n 1)
+    case "$BB_AUS" in
+        *gestartet*|*laeuft*) echo "<OK> Befehlsbruecke: $BB_AUS" ;;
+        "Haken aus - kein Start.") echo "<INFO> Befehlsbruecke: aus (Reiter MQTT, Haken 'Befehle ueber MQTT annehmen')." ;;
+        *) echo "<WARNING> Befehlsbruecke: $BB_AUS - der Minutentakt versucht es erneut." ;;
+    esac
 fi
 
 if [ "$UPGRADE" = "1" ]; then
