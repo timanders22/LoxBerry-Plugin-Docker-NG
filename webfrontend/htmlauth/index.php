@@ -290,10 +290,12 @@ if (($_POST['speichern'] ?? '') === '1') {
      * Sprechtoken steht in einer Meldung, ein leeres Tokenfeld heisst "behalten". */
     $dk_tmangel = array();
     $dk_tbean = array();
+    $dk_thl = array();     // Welle Mehrfach-Ziele (1.3.20): Hinweise des Moduls, nach dem Speichern an der Meldung
+    $dk_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
     $dk_tneu = ansage_formular_lesen($_POST, dk_tts($dk_cfg), $dk_tmangel, $dk_tbean,
-                                     array('modi' => dk_ansage_modi()), dk_ansage_k());
+                                     array('modi' => dk_ansage_modi(), 'ziele' => dk_mit_zielen()), dk_ansage_k(), $dk_thinw);
     foreach ($dk_tmangel as $dk_tm) { $dk_fehler[] = dk_e($dk_tm['text']); }
-    foreach ($dk_tbean as $dk_tb) { $dk_beanstandet[] = $dk_tb; }
+    foreach ($dk_tbean as $dk_tb) { $dk_beanstandet[] = dk_ziele_x2_name($dk_tb); }     // 1.3.20: name[N] -> name.N
     if (!$dk_tmangel) { $dk_neu['tts'] = $dk_tneu; }
     foreach (dk_ansage_anlaesse() as $dk_ak) { $dk_neu[$dk_ak] = isset($_POST[$dk_ak]) ? 1 : 0; }
 
@@ -305,6 +307,8 @@ if (($_POST['speichern'] ?? '') === '1') {
             $dk_cfg = $dk_neu;
             $dk_token = (string) $dk_neu['aktionstoken'];
             $dk_meldung = dk_t('MELDUNG.GESPEICHERT');
+            foreach ($dk_thinw as $dk_th) { $dk_thl[] = $dk_th['text']; }     // Welle Mehrfach-Ziele: erst nach dem Speichern
+            if ($dk_thl) { $dk_meldung .= ' ' . implode(' ', $dk_thl); }
             if ($dk_ports_geaendert) {
                 $dk_meldung .= ' ' . dk_t('MELDUNG.PORTS_ERST_NEU');
             }
@@ -476,18 +480,27 @@ if (isset($_POST['neustart_container'])) {
  */
 /* ---------------- Testansage (Nr. 36 b) ----------------
  * Ins Protokoll nur die Kurzform ohne Text und Token. */
-if (isset($_POST['ansage_test'])) {
-    $dk_ak = dk_ansage_k();
-    $dk_ar = ansage_testansage(dk_tts(dk_config()), $dk_ak);
-    dk_log('Testansage: ' . ansage_kurz($dk_ar));
-    if ($dk_ar['stand'] === 1) {
+/* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
+ * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
+    $dk_tk = dk_ansage_k();
+    $dk_tnur = (isset($_POST['ansage_test_ziel']) && dk_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
+    if (isset($_POST['ansage_test_ziel']) && $dk_tnur === 0) {
+        $dk_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    } elseif ($dk_tnur >= 1) {
+        $dk_tr = ansage_testansage(dk_tts(dk_config()), $dk_tk, $dk_tnur);
+    } else {
+        $dk_tr = ansage_testansage(dk_tts(dk_config()), $dk_tk);
+    }
+    dk_log('Testansage' . ($dk_tnur >= 1 ? ' an Ziel ' . $dk_tnur : '') . ': ' . ansage_kurz($dk_tr));
+    if ($dk_tr['stand'] === 1) {
         dk_weiter('test', array('meldung' => dk_t('DURCHSAGE.M_TEST_OK')));
     }
-    if ($dk_ar['stand'] === -1) {
-        dk_weiter('test', array('meldung' => sprintf(dk_t('DURCHSAGE.M_TEST_NICHTS'), ansage_kennung_text($dk_ar['kennung'], $dk_ak))));
+    if ($dk_tr['stand'] === -1) {
+        dk_weiter('test', array('meldung' => sprintf(dk_t('DURCHSAGE.M_TEST_NICHTS'), ansage_kennung_text($dk_tr['kennung'], $dk_tk))));
     }
     dk_weiter('test', array('fehler' => array(dk_e(sprintf(dk_t('DURCHSAGE.M_TEST_FEHL'),
-                                                          ansage_kennung_text($dk_ar['kennung'], $dk_ak))))));
+                                                          ansage_kennung_text($dk_tr['kennung'], $dk_tk))))));
 }
 
 if (isset($_POST['takt_jetzt'])) {
@@ -1303,9 +1316,12 @@ foreach ($dk_fehlende as $dk_fn) { ?>
 </div>
 <?= ansage_formular_html(dk_tts($dk_cfg), array(
     'w' => function ($n, $g) { return dk_eingabe('settings', $n, $g); },
-    'm' => function ($n) { return dk_markierung($n); },
+    'm' => function ($n) { return dk_markierung(dk_ziele_x2_name($n)); },     // 1.3.20: Tabelle name[N] -> name.N
     'c' => function ($n, $g) { return dk_eingabe_an('settings', $n, $g); },
-    'modi' => dk_ansage_modi()), dk_ansage_k()) ?>
+    'modi' => dk_ansage_modi(),
+    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
+    'ziele' => dk_mit_zielen(),
+    'ziele_post' => dk_eingaben_aktiv() === 'settings' ? dk_ziele_x2_post(dk_eingaben_setzen()['werte']) : null), dk_ansage_k()); ?>
 <div class="sm-feld">
 	<label><input data-role="none" type="checkbox" name="token_neu" value="1"<?= dk_markierung('token_neu') ?>> <?= dk_e(dk_t('EINST.L_TOKENNEU')) ?></label>
 	<p class="sm-hilfe"><?= dk_t('EINST.H_TOKENNEU') ?></p>
@@ -1384,7 +1400,7 @@ foreach ($dk_fehlende as $dk_fn) { ?>
      nichts einzutragen ist und der LoxBerry-Kern das Eingabefeld abschaltet.
      Ist die Fassung nicht lesbar, stehen BEIDE Faelle da: einen von beiden zu
      behaupten waere fuer die Haelfte der Anlagen falsch.
-     Seit 1.3.19 (Entwurf 2.5): unter Fassung 2 die V2-Hakenliste aus dk_v2_haken() - Noncached nur status/ok. -->
+     Seit 1.3.19 (Entwurf 2.5): unter Fassung 2 die V2-Hakenliste aus dk_v2_haken() - Noncached status/ok und (seit 1.3.20) status/befehle. -->
 <div class="sm-step"><b><?= dk_e(dk_t('MQTT.S1')) ?></b><br>
 <?= sprintf(dk_t('MQTT.S1_EINLEITUNG'), dk_e($dk_cfg['mqtt_praefix'])) ?>
 <?php $dk_gwf = (int) $dk_mqttlage['fassung']; ?>
@@ -1892,6 +1908,18 @@ foreach (dk_neustart_sperre_lesen() as $dk_sn => $dk_st) {
 	<td class="sm-aus">&#10007; <?= dk_e($dk_btext) ?></td>
 <?php } ?>
 </tr>
+<?php /* Nachtwelle N5 (1.3.20): stehen unter MQTT-Gateway V2 die Haken der V2-Hakenliste (Reiter MQTT) in
+   config/system/subscriptions.json - und "Noncached" bei status/ok? Unter V1 trifft es nicht zu. */
+list($dk_v2ok, $dk_v2txt) = dk_v2_haken_lage($dk_cfg); ?>
+<tr><td><?= dk_e(dk_t('TEST.F_V2')) ?></td>
+<?php if ($dk_v2ok === true) { ?>
+	<td class="sm-an">&#10003; <?= dk_e($dk_v2txt) ?></td>
+<?php } elseif ($dk_v2ok === null) { ?>
+	<td>&mdash; <?= dk_e($dk_v2txt) ?></td>
+<?php } else { ?>
+	<td class="sm-aus">&#10007; <?= dk_e($dk_v2txt) ?></td>
+<?php } ?>
+</tr>
 <tr><td><?= dk_e(dk_t('TEST.F_ROTATION')) ?></td>
 <?php if ($dk_rot['gesetzt'] === 1) { ?>
 	<td class="sm-an">&#10003; <?= dk_e($dk_rot['max']) ?></td>
@@ -2227,6 +2255,9 @@ $dk_mangel = substr_count($dk_testtabelle, 'sm-aus">&#10007;');
 	<input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
 		<input data-role="none" type="hidden" name="activetab" value="tab-test">
 		<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= dk_e(dk_t('DURCHSAGE.K_TEST')) ?></button>
+<?php /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): je weiteres Ziel ein Knopf "Testansage an Ziel n (Geraet (Plugin))";
+   ohne weitere Ziele nichts. */
+if (dk_mit_zielen()) { echo ansage_testknoepfe_html(dk_tts($dk_cfg), dk_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
 	</form>
 	<form action="index.php" method="post">
 	<input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">

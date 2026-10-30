@@ -100,9 +100,14 @@ dk_endpunkt_nachtragen "$BASE/config/plugins/$PFOLDER.backup.json"
 # nichts eine Fehlermeldung erzeugt.
 CRONZIEL="$BASE/system/cron/cron.01min/$PFOLDER"
 if [ -f "$CRONZIEL" ]; then
-    if grep -q "REPLACELBPBINDIR" "$CRONZIEL" 2>/dev/null; then
+    # Der Suchtext ist ZUSAMMENGESETZT (B1, Messung 30.10.2026): der Installer
+    # ersetzt den Platzhalter in jeder Textdatei des Plugins, auch in dieser
+    # Pruefzeile. Sie suchte dann den richtigen Pfad, fand ihn im Cron und
+    # meldete zweimal FAIL, obwohl der Minutentakt stimmte (1.3.20 am Geraet).
+    PLATZHALTER="REPLACE""LBPBINDIR"
+    if grep -qF "$PLATZHALTER" "$CRONZIEL" 2>/dev/null; then
         echo "<FAIL> $CRONZIEL enthaelt noch den unersetzten Platzhalter"
-        echo "<FAIL> REPLACELBPBINDIR - der Minutentakt liefe ins Leere."
+        echo "<FAIL> $PLATZHALTER - der Minutentakt liefe ins Leere."
     else
         echo "<OK> Der Minutentakt ist eingerichtet: $CRONZIEL"
     fi

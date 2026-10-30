@@ -53,8 +53,9 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     }
 }
 
-/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b). Liegt
- * neben dieser Datei; die Datei schuetzt sich selbst gegen doppeltes Laden. */
+/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b; seit 1.3.20 Stamm 1.2.1
+ * mit weiteren Ausgabezielen, dk_mit_zielen(), Welle Mehrfach-Ziele). Liegt neben dieser Datei; die Datei schuetzt sich
+ * selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
 
 function dk_paths()
@@ -2153,7 +2154,8 @@ function dk_startzeit()
  */
 if (!defined('DK_ANSAGE_SPERRE_S')) { define('DK_ANSAGE_SPERRE_S', 1800); }
 
-/** Erlaubte Ausgabearten - seit 1.3.19 mit Sonos4Lox und SonoX (E6), beschrieben in der Funktion. */
+/** Erlaubte Ausgabearten - seit 1.3.19 mit Sonos4Lox und SonoX (E6), beschrieben in der Funktion. Weitere
+ *  Ausgabeziele (Tabelle, 'ziele') seit 1.3.20 mit Stamm 1.2.1 - dk_mit_zielen() unten; ohne Tabelle wie bisher. */
 function dk_ansage_modi()
 {
     /* Erlaubte Ausgabearten: alle des Moduls 1.1.4 ausser 'audioserver' (kein Antwortweg zu Loxone im Takt).
@@ -2161,6 +2163,43 @@ function dk_ansage_modi()
      * Installation und Zone; SonoX schickt Ansagetexte an Google). Bis 1.3.18 stand hier "alle des Moduls" -
      * Sonos4Lox fehlte dabei schon (E6). */
     return array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox', 'sonos4lox', 'sonox');
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): bietet diese Linie die Tabelle der weiteren Ausgabeziele an? Nur, wenn die
+ *  geladene Abschrift sie kann - laden zwei Abschriften im selben Prozess, gilt die zuerst geladene. */
+function dk_mit_zielen() {
+    return version_compare(ANSAGE_FASSUNG, '1.2.0', '>=') && function_exists('ansage_ziele_html')
+        && function_exists('ansage_ziele_pruefen') && function_exists('ansage_testknoepfe_html');
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1), X-2 mit flachen Schluesseln (name.N): die Felder der Tabelle heissen im
+ *  Formular name[N] (N = 2..6, ansage_ziel_feldnamen()). dk_ziele_x2_name() macht daraus name.N (Beanstandung und
+ *  Markierung), dk_ziele_x2_post() aus den gesammelten Eingaben wieder das POST der Tabelle (ziele_post). */
+function dk_ziele_x2_name($n) {
+    return is_string($n) ? (string) preg_replace('/^(tts_ziel_[a-z]+)\[([2-9])\]\z/', '$1.$2', $n) : $n;
+}
+function dk_ziele_x2_post(array $werte) {
+    $p = array();
+    foreach ($werte as $k => $v) {
+        if (is_string($v) && preg_match('/^(tts_ziel_[a-z]+)\.([2-9])\z/', (string) $k, $m)) { $p[$m[1]][(int) $m[2]] = $v; }
+    }
+    return isset($p['tts_ziel_art']) ? $p : null;
+}
+
+/** Welle Mehrfach-Ziele (1.3.20): die Felder der Tabelle in der Einmalmeldung (X-2), flach name.N fuer N = 2..6 -
+ *  nur, wenn die geladene Abschrift die Tabelle kann. */
+function dk_ziele_x2_felder()
+{
+    $f = array();
+    if (dk_mit_zielen()) {
+        for ($i = 2; $i <= 6; $i++) {
+            foreach (array('tts_ziel_art', 'tts_ziel_wo', 'tts_ziel_laut', 'tts_ziel_sprache', 'tts_ziel_ein',
+                           'tts_ziel_loeschen') as $n) {
+                $f[] = $n . '.' . $i;
+            }
+        }
+    }
+    return $f;
 }
 
 /** Die Anlaesse: Kennung => Konfigurationsschluessel. */
@@ -2653,6 +2692,8 @@ function dk_eingabe_felder($form)
         else { $f['settings']['text'][] = $dk_n; }
     }
     foreach (dk_ansage_anlaesse() as $dk_n) { $f['settings']['haken'][] = $dk_n; }
+    // Welle Mehrfach-Ziele (1.3.20): die Tabelle der weiteren Ziele, flach als name.N (Texte; ein Haken fehlt = aus)
+    foreach (dk_ziele_x2_felder() as $dk_n) { $f['settings']['text'][] = $dk_n; }
     return isset($f[$form]) ? $f[$form] : null;
 }
 
@@ -2669,6 +2710,12 @@ function dk_eingaben_sammeln($form, $beanstandet)
     $werte = array();
     foreach ($f['text'] as $k) {
         if (isset($_POST[$k]) && dk_eingabe_taugt($_POST[$k])) { $werte[$k] = $_POST[$k]; }
+        /* Welle Mehrfach-Ziele (1.3.20): die Tabelle kommt als name[N] und reist flach als name.N. */
+        $zt = explode('.', $k);
+        if (count($zt) === 2 && isset($_POST[$zt[0]]) && is_array($_POST[$zt[0]]) && isset($_POST[$zt[0]][$zt[1]])
+            && dk_eingabe_taugt($_POST[$zt[0]][$zt[1]])) {
+            $werte[$k] = $_POST[$zt[0]][$zt[1]];
+        }
     }
     foreach ($f['haken'] as $k) {
         $werte[$k] = isset($_POST[$k]) ? '1' : '';
@@ -4213,6 +4260,20 @@ function dk_sicherung_lesen($roh, &$namen = null)
     if ($dk_abeh) {
         $hinweis[] = sprintf(dk_t('DURCHSAGE.SICH_BEHALTEN'), dk_e(implode(', ', $dk_abeh)));
     }
+    /* Welle Mehrfach-Ziele (1.3.20): dk_wert_pruefen('tts') nimmt "$dk_tp + $dk_tj" - die geltenden weiteren Ziele
+     * einer Sicherung ohne Liste blieben schon bisher, still. Die Spaetliste prueft den Block der Datei und nennt sie
+     * im Hinweis der Spaetschluessel (Gruppe 21). */
+    $dk_tsneu = array('tts' => (isset($daten['tts']) && is_array($daten['tts'])) ? $daten['tts'] : null);
+    $dk_tsjetzt = array('tts' => dk_tts(dk_config()));
+    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
+     * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
+     * heisst "keine weiteren Ziele" und wird so uebernommen. */
+    $dk_spaete = array();
+    if (!$mangel && is_array($dk_tsneu['tts']) && function_exists('ansage_sicherung_spaet')) {
+        list($dk_tsneu['tts'], $dk_spaete) = ansage_sicherung_spaet($dk_tsneu['tts'],
+            (isset($dk_tsjetzt['tts']) && is_array($dk_tsjetzt['tts'])) ? $dk_tsjetzt['tts'] : null);
+    }
+    foreach ($dk_spaete as $dk_sn) { $dk_spaet[] = $dk_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
     if ($dk_spaet) {
         $hinweis[] = sprintf(dk_t('EINST.SICH_SPAET'), dk_e(implode(', ', $dk_spaet)));
     }
@@ -4813,7 +4874,10 @@ function dk_mqtt_namenstabelle($cfg = null)
             $aus[] = $zeile(str_replace('*', dk_container_abschnitt($n), $thema), $f, $n);
         }
     }
-    foreach (array('status/befehle' => array('TH_BEFEHLE', '1/0/-1', 'H'),
+    /* Nachtwelle N5 (1.3.20, Nachtrag Vorschrift 29.10.): status/befehle mit Noncached ('N') - der Waechter der
+     * Bruecke schickt es jede Minute mit gleichem Wert, Gateway V2 gaebe es nach einem Neustart des Miniservers sonst
+     * nicht neu (Dedup). */
+    foreach (array('status/befehle' => array('TH_BEFEHLE', '1/0/-1', 'N'),
                    'befehl/neustart/quittung' => array('TH_QUITTUNG', 'Text', '')) as $thema => $b) {
         $aus[] = array('name' => dk_gateway_name($prae, $thema), 'thema' => $prae . '/' . $thema, 'kurz' => $thema,
                        'text' => $b[1] === 'Text', 'werte' => $b[1], 'fw' => null, 'retain' => false, 'v2' => $b[2],
@@ -4830,6 +4894,110 @@ function dk_v2_haken($cfg = null)
         if ($z['v2'] === 'H' || $z['v2'] === 'N') { $aus[] = $z; }
     }
     return $aus;
+}
+
+/**
+ * Nachtwelle N5 (1.3.20): die angehakten Datenpunkte aus config/system/subscriptions.json des MQTT-Gateways V2
+ * (Subscriptions[].Id je Thema, Noncached; Form wie Govee gv_mqtt_v2_haken_lage(), MGiSmart mg_v2_abos()). Rein.
+ * Rueckgabe array(Thema => Noncached bool), null = keine JSON-Daten; ohne Liste in der Datei: leer (nichts angehakt).
+ */
+function dk_v2_abos($daten)
+{
+    if (!is_array($daten)) { return null; }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) { $liste = $daten[$s]; break; }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) { continue; }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) { $id = trim($e[$k]); break; }
+        }
+        if ($id === '') { continue; }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k]) && is_scalar($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+                break;
+            }
+        }
+        $abo[$id] = !empty($abo[$id]) || $nc;
+    }
+    return $abo;
+}
+
+/** Nachtwelle N5 (1.3.20): eine Themenliste fuer die Pruefzeile kuerzen - hoechstens $n Eintraege, dann "... (+k)";
+ *  leer "-". */
+function dk_v2_kurz(array $l, $n = 8)
+{
+    if (!$l) { return '-'; }
+    return implode(', ', array_slice($l, 0, $n)) . (count($l) > $n ? ' … (+' . (count($l) - $n) . ')' : '');
+}
+
+/**
+ * Nachtwelle N5 (1.3.20): Soll gegen Ist (Rein). Soll ist die Hakenliste dk_v2_haken() - dieselbe Liste, die der Reiter MQTT (V2-Hakenliste) zeigt,
+ * mit den Textthemen, die dort stehen (sie haben einen Texteingang; ohne Haken kaemen sie unter V2 nie an). Fehlt ein
+ * Thema in den Abos, steht es in fehlt[]; braucht es "Noncached" und hat es nicht, steht es in ohne_nc[].
+ * Traegt ein Datenpunkt ohne Noncached-Bedarf "Noncached", steht er in nc_zuviel[] und ist ein Fehler
+ * (Hausform wie MGiSmart 1.1.28 mg_v2_haken_abgleich(), Vereinheitlichung 29.10.2026). Je Eintrag $soll:
+ * array(thema voll, noncached bool).
+ * Rueckgabe array(ok bool, fehlt[], ohne_nc[], angehakt, soll, davon Noncached, nc_zuviel[]).
+ */
+function dk_v2_abgleich(array $soll, array $abo)
+{
+    $fehlt = array();
+    $ohne = array();
+    $zuviel = array();
+    $da = 0;
+    $n = 0;
+    $nc = 0;
+    foreach ($soll as $e) {
+        $n++;
+        if ($e[1]) { $nc++; }
+        if (!array_key_exists($e[0], $abo)) { $fehlt[] = $e[0]; continue; }
+        $da++;
+        if ($e[1] && !$abo[$e[0]]) { $ohne[] = $e[0]; }
+        elseif (!$e[1] && $abo[$e[0]]) { $zuviel[] = $e[0]; }
+    }
+    return array(!$fehlt && !$ohne && !$zuviel, $fehlt, $ohne, $da, $n, $nc, $zuviel);
+}
+
+/** Nachtwelle N5 (1.3.20): die V2-Hakenliste (dk_v2_haken(), EINE Quelle mit dem Reiter MQTT) als Soll-Liste des
+ *  V2-Abgleichs: array(thema voll, noncached). */
+function dk_v2_soll($cfg = null)
+{
+    $aus = array();
+    foreach (dk_v2_haken($cfg) as $z) {
+        $aus[] = array($z['thema'], $z['v2'] === 'N');
+    }
+    return $aus;
+}
+
+/**
+ * Nachtwelle N5 (1.3.20): Zeile "MQTT-Gateway V2: Datenpunkte angehakt?" im Reiter Test. Liest nur
+ * config/system/general.json (dk_mqtt_lage()) und config/system/subscriptions.json. Rueckgabe array(true|false|null,
+ * Text): null = trifft nicht zu (Gateway V1, MQTT im Plugin aus) oder nicht feststellbar.
+ */
+function dk_v2_haken_lage($cfg = null)
+{
+    $cfg = is_array($cfg) ? $cfg : dk_config(false);
+    $m = dk_mqtt_lage();
+    $home = dk_paths()['home'];
+    if ((int) $m['fassung'] === 0 || $home === '') { return array(null, dk_t('TEST.A_V2_UNKLAR')); }
+    if ((int) $m['fassung'] < 2) { return array(null, dk_t('TEST.A_V2_V1')); }
+    if (empty($cfg['mqtt_aktiv'])) { return array(null, dk_t('TEST.A_V2_MQTT_AUS')); }
+    $roh = @file_get_contents($home . '/config/system/subscriptions.json');
+    $abo = is_string($roh) ? dk_v2_abos(json_decode($roh, true)) : null;
+    if ($abo === null) {
+        return array(null, sprintf(dk_t('TEST.A_V2_UNKLAR_DATEI'), 'config/system/subscriptions.json'));
+    }
+    list($ok, $fehlt, $ohne, $da, $soll, $nc, $zuviel) = dk_v2_abgleich(dk_v2_soll($cfg), $abo);
+    if ($soll === 0) { return array(null, dk_t('TEST.A_V2_LEER')); }   // leere Hakenliste: kein Urteil
+    if ($ok) { return array(true, sprintf(dk_t('TEST.A_V2_OK'), $soll, $nc)); }
+    return array(false, sprintf(dk_t('TEST.A_V2_FEHLT'), $da, $soll, dk_v2_kurz($fehlt), dk_v2_kurz($ohne))
+        . ($zuviel ? ' ' . sprintf(dk_t('TEST.A_V2_NC_ZUVIEL'), dk_v2_kurz($zuviel)) : ''));
 }
 
 /**

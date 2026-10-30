@@ -3,9 +3,36 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.19 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.20 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.20
+
+Pflegefassung der Nachtwelle (29.10.2026), ohne Änderung an Takt, MQTT-Werten und Neustart aus Loxone; neu sind der
+Selbsttest für Gateway V2 und mehrere Lautsprecher gleichzeitig für die Ansagen:
+
+* **Befehlsbrücke 1.0.2** (gemeinsame Stammfassung). Hier ändert sich nichts Sichtbares: Docker NG bietet keine
+  Vorlage der MQTT-Befehle an (die neue Fassung bringt dort Windows-Zeilenenden), der Befehl
+  `dockerng/befehl/neustart` läuft unverändert.
+* **Gemeinsame Sprachausgabe 1.2.1** (bisher 1.1.4). Sichtbar neu sind außerdem der Hinweis unter dem Feld „Sprache“
+  und die Bezeichnung „Amazon Echo (Alexa-NG)“ in der Auswahl.
+* **Mehrere Lautsprecher gleichzeitig (Sprachmodul 1.2.1):** Unter der Ausgabeart (jetzt „Ziel 1“) nimmt die Tabelle
+  *Weitere Ausgabeziele (gleichzeitig)* bis zu fünf weitere Ziele auf – etwa Google-Lautsprecher (Chromecast 4 Lox NG)
+  in einem Raum und Amazon Echo (Alexa-NG) in einem anderen neben dem Loxone Music Server. Die Ansage geht an alle
+  eingeschalteten Ziele zugleich (eine Ansage dauert so lange wie das langsamste Ziel, höchstens 10 s, mit Sonos 30 s);
+  scheitert eines, sprechen die anderen. Protokoll und Reiter Test nennen jedes Ziel, im Reiter Test gibt es je Ziel
+  eine Testansage. Die bestehende Einstellung ist unverändert Ziel 1; ohne weitere Ziele verhält sich alles wie in
+  1.3.19. Antwort an Loxone, MQTT-Themen und Brückenbefehl `ansage` bleiben, wie sie sind.
+* **Vor einem Zurückgehen** auf 1.3.19 oder älter die weiteren Ziele entfernen: ältere Fassungen kennen die Liste nicht
+  und fielen beim Laden auf die Werkseinstellung der Sprachausgabe zurück.
+* **Reiter Test:** *Testansage* spricht wie bisher an alle Ziele; die Knöpfe *Testansage an Ziel n* daneben sprechen
+  den Testsatz nur an diesem Ziel.
+* **Reiter Test, Zeile „MQTT-Gateway V2: Datenpunkte angehakt?“**: Läuft das Gateway in Fassung 2, sieht das Plugin in
+  `config/system/subscriptions.json` nach, ob alle Datenpunkte der V2-Hakenliste (Reiter MQTT) angehakt sind und
+  `status/ok` und `status/befehle` „Noncached“ tragen; was fehlt, steht mit Namen da. Unter Fassung 1 trifft die Zeile
+  nicht zu. `status/befehle` steht dafür jetzt mit „Noncached“ in der Hakenliste: es kommt jede Minute mit gleichem
+  Wert, und Gateway V2 schickte es nach einem Neustart des Miniservers sonst nicht neu.
 
 ## Neu in 1.3.19
 
