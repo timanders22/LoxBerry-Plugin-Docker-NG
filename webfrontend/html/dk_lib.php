@@ -1948,6 +1948,9 @@ function dk_melden($schwere, $text)
     if (!function_exists('notify_ext')) { return false; }
     $s = (int) $schwere;
     if ($s < 1 || $s > 7) { $s = 4; }
+    /* bis 1.3.20: das erste Laden des SDK laeuft hier im Bereich dieser Funktion, loxberry_system.php setzt dabei $p (Zeile 18). Danach war $p['plugin'] leer,
+     * notify_ext() verwarf die Meldung ("Notification: Missing parameters" auf stderr), und im Cron war es immer das erste Laden. */
+    $p = dk_paths();
     notify_ext(array(
         'PACKAGE'  => $p['plugin'],
         'NAME'     => 'Docker NG',
@@ -4644,7 +4647,10 @@ function dk_broker_sitzung(array $senden, array $rueck = array())
     };
     $lies = function ($n) use ($s) {
         $d = '';
+        /* bis 1.3.20 ohne Frist: ein Broker, der ein Paket ankuendigt und nur tropfenweise liefert, hielt den Leser fest. Schweigt er ganz, greift schon stream_set_timeout(). */
+        $lies_bis = microtime(true) + 5.0;
         while (strlen($d) < $n) {
+            if (microtime(true) >= $lies_bis) { return null; }
             $t = @fread($s, $n - strlen($d));
             if ($t === false || $t === '') {
                 $meta = stream_get_meta_data($s);

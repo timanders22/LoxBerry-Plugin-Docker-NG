@@ -3,9 +3,15 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.20 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.21 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.21
+
+Pflegefassung. Meldungen im LoxBerry-Benachrichtigungszentrum gingen aus dem regelmäßigen Lauf verloren, das ist behoben. Der Leser der Haus-Themen hat jetzt auch beim Lesen eines Pakets eine feste Frist.
+Gemeinsame Sprachausgabe 1.3.2; an den Ansagen dieser Linie ändert sich nichts.
+
 
 ## Neu in 1.3.20
 

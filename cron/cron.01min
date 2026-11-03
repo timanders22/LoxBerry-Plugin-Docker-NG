@@ -111,11 +111,14 @@ fi
 # startet gar nicht - still (Installer-Pruefer J2). Dann steht das im
 # Protokoll, und der Takt laeuft trotzdem. Das touch frischt die
 # Aenderungszeit auf (Regeln/06, Abfahrts-Assistent 1.6.10).
-if [ -e "$ERR" ] && [ ! -w "$ERR" ]; then
+# 1.3.21 (Nachzug 01.11.2026, Bauart Renault NG 2.1.23): touch allein genuegt nicht - es gelingt auch auf einem
+# Verzeichnis und, beim Eigentuemer, auf einer schreibgeschuetzten Datei. Bis 1.3.20 brach dann die Umlenkung
+# den Befehl ab, BEVOR er startete.
+if [ -e "$ERR" ] && { [ ! -f "$ERR" ] || [ ! -w "$ERR" ]; }; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Cron: $ERR ist nicht beschreibbar - Fehlermeldungen des Minutentakts gehen verloren." >> "$PROT"
     ERR=/dev/null
 else
-    touch "$ERR" 2>/dev/null
+    touch "$ERR" 2>/dev/null || ERR=/dev/null
 fi
 
 cd "$VERZ" || exit 1
