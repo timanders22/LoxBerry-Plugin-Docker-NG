@@ -3,9 +3,14 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.21 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.22 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.22
+
+* **Dieses Plugin sagt weiter wie bisher an:** Es nimmt die Regeln und die neuen Ziele Dashboard-Tafel und Apple HomePod nicht. Nur die gemeinsame Sprachausgabe ist neu.
+* **Gemeinsame Sprachausgabe 1.4.0.** Einstellungen und ein gespeichertes Aus bleiben, wie sie sind; am Gerät ist nichts einzurichten.
 
 ## Neu in 1.3.21
 
