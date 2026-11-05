@@ -209,6 +209,7 @@ if (isset($_POST['activetab']) && in_array((string) $_POST['activetab'], $dk_rei
  */
 if (($_POST['download'] ?? '') === 'xml_in') {
     $dk_xml = dk_xml_virtual_in_http((string) ($_SERVER['HTTP_HOST'] ?? 'loxberry'), $dk_token);
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="VI_DOCKER_NG.xml"');
     echo $dk_xml;
@@ -763,6 +764,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dk_sichern'])) {
     $dk_js = json_encode($dk_sich,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($dk_js !== false) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="docker_einstellungen_'
                . date('Ymd_His') . '.json"');
