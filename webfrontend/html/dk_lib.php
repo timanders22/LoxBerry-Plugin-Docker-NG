@@ -1187,6 +1187,23 @@ function dk_gesundheit_ableiten($feld, $status)
 }
 
 /**
+ * 1.3.26: Zeitangabe aus docker inspect (State.StartedAt) als Unix-Zeit, false wenn unlesbar. Docker schreibt bis zu
+ * neun Nachkommastellen ("2026-11-07T21:46:20.707384631Z", Endnullen fallen weg); strtotime() von PHP 7.4 - der
+ * Fassung von LoxBerry 3.0 bis 4.0 - liefert bei neun Stellen false, bei acht und weniger nicht; PHP 8.4 rechnet beides
+ * (am Geraet und unter 7.4.33/8.4.27 gemessen 10.11.2026, Bauart wie Audioserver NG 0.9.8). Damit war "seit" bei fast jedem
+ * Start 0, und das zweite Merkmal der Neustartschleife ("laeuft seit weniger als einer Minute") griff nie.
+ * Die Bruchteile der Sekunde zaehlen hier nicht.
+ */
+function dk_docker_zeit($s)
+{
+    if (!is_string($s) || $s === '' || strpos($s, '0001-01-01') === 0) {
+        return false;   // Docker meldet einen nie gestarteten Container als 0001-01-01T00:00:00Z
+    }
+    $t = strtotime(preg_replace('/(\d{2}:\d{2}:\d{2})\.\d+/', '$1', $s));
+    return ($t !== false && $t > 0) ? $t : false;
+}
+
+/**
  * Einmal 'docker inspect' fuer ALLE Container.
  *
  * Rueckgabe: array(name => array(autostart, neustarts, seit, endecode, oom)).
@@ -1226,7 +1243,7 @@ function dk_details($frisch = false)
         if (count($t) < 6) { continue; }
         $name = ltrim($t[0], '/');          // docker inspect stellt einen / voran
         $pol  = strtolower(trim($t[1]));
-        $seit = strtotime($t[3]);
+        $seit = dk_docker_zeit($t[3]);
         $d[$name] = array(
             'autostart' => $pol === '' ? -1
                            : (in_array($pol, array('always', 'unless-stopped', 'on-failure'), true) ? 1 : 0),

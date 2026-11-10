@@ -3,9 +3,13 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.25 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.26 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.26
+
+- **Fehler behoben: Neustartschleifen wurden nur über den Zähler erkannt.** Das Plugin liest die Startzeit jedes Containers aus `docker inspect`. Docker schreibt sie meist mit neun Nachkommastellen (`2026-11-07T21:46:20.707384631Z`), und PHP 7.4 – die Fassung von LoxBerry 3.0 bis 4.0 – kann das nicht lesen (PHP 8.4 schon). Am Gerät gemessen am 10.11.2026. Das zweite Merkmal einer Neustartschleife – „läuft seit weniger als einer Minute und ist schon einmal neu gestartet“ – griff deshalb fast nie. Gemeldet wurde eine Schleife nur, wenn innerhalb einer Stunde so viele Neustarts zusammenkamen wie unter „Neustarts je Stunde, ab denen eine Schleife gemeldet wird“ eingestellt.
 
 ## Neu in 1.3.25
 
