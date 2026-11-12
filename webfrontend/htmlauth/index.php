@@ -430,14 +430,9 @@ if (($_POST['speichern_mqtt'] ?? '') === '1') {
             }
             /* V3 (1.3.19): die Befehlsbruecke sofort schalten - der Waechter startet nach einem Start hoechstens
              * alle 600 s neu. */
-            list($dk_brc, $dk_bwas, $dk_baus) = dk_bruecke_schalten($dk_neu);
-            if ($dk_bwas === 'start') {
-                if ($dk_brc === 0) { $dk_meldung .= ' ' . dk_t('BEFEHL.M_EIN'); }
-                else { $dk_fehler[] = dk_e(sprintf(dk_t('BEFEHL.M_START_FEHL'), $dk_baus)); }
-            } elseif ($dk_bwas === 'stop') {
-                if ($dk_brc === 0) { $dk_meldung .= ' ' . dk_t('BEFEHL.M_AUS'); }
-                else { $dk_fehler[] = dk_e(sprintf(dk_t('BEFEHL.M_STOP_FEHL'), $dk_baus)); }
-            }
+            list($dk_bm, $dk_bf) = dk_bruecke_bericht(dk_bruecke_schalten($dk_neu));
+            if ($dk_bm !== '') { $dk_meldung .= ' ' . $dk_bm; }
+            if ($dk_bf !== '') { $dk_fehler[] = $dk_bf; }
         } else {
             $dk_fehler[] = dk_t('FEHLER.SCHREIBEN');
         }
@@ -814,7 +809,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dk_zurueck'])) {
                     $dk_m['meldung'] .= ' ' . sprintf(dk_t('MELDUNG.ABRAEUMEN_VORGEMERKT'), $dk_nv, $dk_cfg['mqtt_praefix']);
                 }
             }
-            dk_bruecke_schalten(dk_config());
+            /* SEIT 1.3.28: sagen, was mit der Befehlsbruecke geschah (bis 1.3.27 verworfen). */
+            list($dk_bm, $dk_bf) = dk_bruecke_bericht(dk_bruecke_schalten(dk_config()));
+            if ($dk_bm !== '') { $dk_m['meldung'] .= ' ' . $dk_bm; }
+            if ($dk_bf !== '') { $dk_m['fehler'] = array($dk_bf); }
             if ($dk_shinweis) {
                 // Hinweise gehen nicht in die Beanstandungsliste (Regeln/04):
                 // uebernommen ist ja alles Gueltige.

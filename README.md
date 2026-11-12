@@ -3,9 +3,17 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.27 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.28 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.28
+
+Pflegefassung aus der Nachtprüfung vom 12.11.2026. Takt, Endpunkt, MQTT-Themen und Neustart aus Loxone bleiben, wie sie sind.
+
+- **Fehler behoben: Die Konfiguration wurde nicht ganz vervollständigt.** Fehlten in einer bestehenden `dockerng.json` nur die Schlüssel `endpunkt_ein` oder `mqtt_aktiv`, schrieb der Minutentakt nichts; fehlten weitere, nannte die Protokollzeile die beiden nicht. Jetzt stehen sie danach in der Datei, mit dem Wert, mit dem das Plugin schon bisher gearbeitet hat (`endpunkt_ein` 1, `mqtt_aktiv` 0 bei einer Bestandsdatei). Am Verhalten ändert sich nichts.
+- **Zurückspielen einer Sicherung sagt, was mit der Befehlsbrücke geschah.** Bisher wurde die Brücke nach dem Zurückspielen gestartet oder angehalten, die Seite meldete aber nur „übernommen“. Jetzt steht dort dieselbe Meldung wie beim Speichern im Reiter *MQTT* – auch, wenn sich die Brücke nicht starten oder anhalten ließ.
+- **Deinstallation:** Der Rest eines abgebrochenen Schreibvorgangs der Zweitschrift (`config/plugins/dockerng.backup.json.tmp.<Nummer>`) trägt dasselbe Merkwort wie die Zweitschrift. Er wird jetzt wie sie überschrieben und entfernt; bisher blieb er liegen.
 
 ## Neu in 1.3.27
 

@@ -210,6 +210,13 @@ for DATEI in "$BK" "$CF" "$BASE/config/plugins/$PFOLDER/setup_token" \
         rm -f "$DATEI" && echo "<OK> $DATEI ueberschrieben und entfernt."
     fi
 done
+# SEIT 1.3.28: Reste eines abgebrochenen Schreibvorgangs der Zweitschrift (Muster .tmp.<pid>, wie in
+# preinstall.sh). Sie liegen neben dem Konfigordner, tragen dasselbe Merkwort und blieben bis 1.3.27 liegen.
+for DATEI in "$BK.tmp."*; do
+    [ -f "$DATEI" ] && [ ! -L "$DATEI" ] || continue
+    dd if=/dev/zero of="$DATEI" bs=1k count=8 conv=notrunc >/dev/null 2>&1
+    rm -f "$DATEI" && echo "<OK> $DATEI ueberschrieben und entfernt."
+done
 # Upgrade-Marke (I1) und Sperrdateien neben dem Datenordner (I7, C9).
 # Seit 1.3.19 (E-E7) dazu das MQTT-Gedaechtnis und die Vormerkung neben dem Datenordner - erst hier, NACH
 # --mqtt-leeren, das sie liest.

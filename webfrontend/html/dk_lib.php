@@ -624,14 +624,19 @@ function dk_config_vervollstaendigen()
     clearstatcache(true, $p['config']);
     $roh = @is_file($p['config']) ? @file_get_contents($p['config']) : false;
     if (!dk_konfig_taugt($roh)) { return array(); }
-    $datei = json_decode($roh, true);
+    $vorher = json_decode($roh, true);
     // Seit 1.3.19: dieselbe Lese-Regel wie dk_config() - sonst schriebe der erste Takt die Vorgabe
     // endpunkt_ein 0 in eine Bestandsdatei, und ihr HTTP-Endpunkt ginge still aus.
-    $datei = dk_uebergang($datei, true);
+    $datei = dk_uebergang($vorher, true);
+    /* BERICHTIGT in 1.3.28: gezaehlt wird gegen die Datei VOR der Uebergangsregel. Bis 1.3.27 setzte
+     * dk_uebergang() endpunkt_ein und mqtt_aktiv vorher in den Speicher; fehlte nur einer der beiden, wurde
+     * nichts geschrieben, und fehlten weitere, nannte die Protokollzeile die beiden nicht. Geschrieben wird
+     * weiter der Wert der Uebergangsregel (endpunkt_ein 1, mqtt_aktiv 0), also das, womit das Plugin ohnehin
+     * arbeitet. */
     $fehlend = array();
     foreach (dk_vorgaben() as $k => $w) {
-        if (!array_key_exists($k, $datei)) {
-            $datei[$k] = $w;
+        if (!array_key_exists($k, $vorher)) {
+            if (!array_key_exists($k, $datei)) { $datei[$k] = $w; }
             $fehlend[] = $k;
         }
     }
@@ -5258,6 +5263,27 @@ function dk_bruecke_schalten($cfg = null)
     if (!bb_dienste()) { return array(null, '', ''); }
     list($rc, $aus) = bb_sh($p, 'stop');
     return array($rc, 'stop', $aus);
+}
+
+/**
+ * Was ist mit der Befehlsbruecke geschehen? Aus dem Ergebnis von dk_bruecke_schalten() eine Meldung (Zeichenkette,
+ * leer = nichts zu sagen) und eine Beanstandung (Zeichenkette, leer = keine). Seit 1.3.28 fuer den Reiter MQTT UND
+ * das Zurueckspielen einer Sicherung; bis 1.3.27 verwarf das Zurueckspielen das Ergebnis (Hausstandard: danach den
+ * Dienst nachziehen und sagen, was mit ihm geschah).
+ */
+function dk_bruecke_bericht($erg)
+{
+    if (!is_array($erg) || count($erg) < 3) { return array('', ''); }
+    list($rc, $was, $aus) = $erg;
+    if ($was === 'start') {
+        return ($rc === 0) ? array(dk_t('BEFEHL.M_EIN'), '')
+                           : array('', dk_e(sprintf(dk_t('BEFEHL.M_START_FEHL'), (string) $aus)));
+    }
+    if ($was === 'stop') {
+        return ($rc === 0) ? array(dk_t('BEFEHL.M_AUS'), '')
+                           : array('', dk_e(sprintf(dk_t('BEFEHL.M_STOP_FEHL'), (string) $aus)));
+    }
+    return array('', '');
 }
 
 /**
