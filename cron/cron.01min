@@ -23,6 +23,20 @@
 # Hinweis waere beim naechsten Neustart fort - und gerade dann sucht man ihn.
 # Sie geht in das Protokoll des Plugins, das die Oberflaeche im Reiter
 # Logdateien anzeigt.
+# Upgrade-Marke (Regeln/06, Entscheidung des Hausherrn 18.11.2026, Frage 60; Bauart Renault-NG 2.1.37):
+# waehrend einer Aktualisierung ruht dieser Takt. preupgrade.sh legt die Marke neben dem Datenordner
+# mit der Unixzeit an, postinstall.sh oder postupgrade.sh entfernt sie. Ist sie juenger als 3600 s,
+# endet der Takt hier still, vor jedem Schreiben. Eine Marke, die 3600 s oder aelter ist, in der Zukunft
+# liegt oder keine Unixzeit enthaelt, gilt nicht - eine abgebrochene Aktualisierung legt den Takt nicht
+# fuer immer still. Liefert die Uhr keine Zahl, gilt die Marke (geschlossen ausfallen).
+UPGM_MARKE="REPLACELBPDATADIR.upgrade_laeuft"
+if [ -f "$UPGM_MARKE" ]; then
+    upgm_jetzt=$(date +%s 2>/dev/null); upgm_seit=$(cat "$UPGM_MARKE" 2>/dev/null)
+    case "$upgm_seit" in ''|*[!0-9]*) upgm_seit=0 ;; esac
+    case "$upgm_jetzt" in ''|*[!0-9]*|0) exit 0 ;; esac
+    if [ "$upgm_seit" -le "$upgm_jetzt" ] && [ $((upgm_jetzt - upgm_seit)) -lt 3600 ]; then exit 0; fi
+fi
+
 VERZ="REPLACELBPBINDIR"
 PROT="REPLACELBPLOGDIR/dockerng.log"
 DATA="REPLACELBPDATADIR"
@@ -42,23 +56,6 @@ if [ "$(id -u 2>/dev/null)" = "0" ]; then
     exit 1
 fi
 
-# EINE AKTUALISIERUNG LAEUFT (I7, Entscheidung 1): solange preupgrade.sh
-# die Marke gesetzt hat, ruht der Takt - still. Zwischen dem Kopieren der
-# Cron-Datei und dem der Oberflaeche fand er sonst dk_lib.php nicht und
-# schrieb einen Fehlalarm nach cron.err. postinstall.sh raeumt die Marke ab.
-# SEIT 1.3.19 (D19/E2): die Marke gilt nur 3600 s (Inhalt = Unix-Zeit aus preupgrade.sh, sonst die
-# Aenderungszeit); eine aus der Zukunft gilt nicht (Hausregel, wie bb_marke_liegt()). Bis 1.3.18 hielt eine
-# liegengebliebene Marke (abgebrochenes Update) den Takt fuer immer still an. Eine alte Marke: der Takt laeuft,
-# und dk_takt() sagt es hoechstens stuendlich im Protokoll (DK_MARKE_ALT); Reiter Test und Befund nennen sie.
-if [ -e "$DATA.upgrade_laeuft" ]; then
-    MT=$(head -c 16 "$DATA.upgrade_laeuft" 2>/dev/null | tr -d '[:space:]')
-    case "$MT" in ''|*[!0-9]*) MT=$(stat -c %Y "$DATA.upgrade_laeuft" 2>/dev/null || echo 0) ;; esac
-    JETZT=$(date +%s)
-    if [ "$MT" -le "$JETZT" ] 2>/dev/null && [ $((JETZT - MT)) -lt 3600 ]; then
-        exit 0
-    fi
-    export DK_MARKE_ALT="$MT"
-fi
 
 if [ ! -d "$VERZ" ]; then
     mkdir -p "$(dirname "$PROT")" 2>/dev/null
