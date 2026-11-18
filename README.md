@@ -3,9 +3,26 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.28 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.29 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.29
+
+- **Verhalten geändert – Einstellungen sichern und zurückspielen nach der gemeinsamen Vorlage:** Die Knöpfe im Reiter *Einstellungen* arbeiten jetzt mit demselben Sicherungsmodul (1.2.11) wie die übrigen Plugins dieser Reihe. Für den Anwender ändert sich:
+  - Die Sicherungsdatei trägt im Kopf das Kennzeichen `LoxBerry-Plugin-Docker-NG` (`_plugin`) und die Fassung (`_fassung`). Sicherungen von 1.3.9 bis 1.3.28 tragen das frühere Kennzeichen `Docker NG`; sie werden weiter angenommen. Eine Datei eines anderen Plugins und eine Datei ohne Kennzeichen werden als Ganzes abgewiesen; es ändert sich dann nichts. Sicherungen von 1.3.2 bis 1.3.8 waren die rohe Konfiguration ohne jeden Kopf; sie lassen sich von einer fremden Datei nicht sicher unterscheiden und werden seit dieser Fassung abgewiesen (bis 1.3.28 wurden sie angenommen).
+  - **Der Einrichtungstoken von Portainer ist jetzt in der Sicherung** (`setup_token`), sofern bei der Installation einer vorgegeben wurde. Beim Zurückspielen wird er samt Zweitschrift neben dem Konfigordner geschrieben, aber nur, wenn auf dem LoxBerry noch keiner liegt; liegt schon einer (etwa der, den die Installation auf einem neuen Gerät für dessen Portainer-Container festgelegt hat), bleibt er, und die Meldung sagt es. Eine Sicherung ohne ihn, eine aus einer früheren Fassung oder eine mit leerem Wert lässt den geltenden stehen; die Meldung sagt das. Ein Wert, der nicht die Form eines Tokens hat, weist die Datei ab. Die Datei trägt damit zwei Geheimnisse – wie ein Passwort behandeln.
+  - Eine Einstellung, die diese Fassung nicht kennt, wird nicht übernommen und mit ihrem Namen gemeldet, nie mit ihrem Wert – oben in der Datei und im Block der Sprachausgabe. Die übrigen Einstellungen werden zurückgespielt. Bis 1.3.28 wies ein unbekannter Name die ganze Datei ab. Einträge der geltenden Einstellungen, die diese Fassung nicht kennt (etwa aus einer Bearbeitung von Hand), fallen beim Zurückspielen weg und werden ebenfalls mit Namen genannt.
+  - Ein leerer Wert in der Sicherung überschreibt keinen bestehenden; der bisherige bleibt, und die Meldung nennt den Namen. Bisher galt das nur für das Aktionstoken.
+  - Einstellungen, die erst nach 1.3.9 dazukamen (Sprachausgabe und ihre Anlässe seit 1.3.12, HTTP-Endpunkt und Befehle über MQTT seit 1.3.19), behalten ihren geltenden Wert, wenn sie in einer älteren Sicherung fehlen; die Meldung nennt sie wie bisher. **Fehlt dagegen eine Einstellung, die jede Sicherung seit 1.3.9 trägt** (etwa die Ports oder das Aktionstoken), wird die Datei abgewiesen und es ändert sich nichts.
+  - Steuerfreigabe und Neustartliste kommen weiter nie aus einer Sicherung. Seit dieser Fassung stehen sie auch nicht mehr darin; trägt eine ältere Sicherung sie, sagt die Meldung, dass sie nicht übernommen wurden. Die frühere Einstellung `portainer_name` wird still übergangen.
+  - Eine halb gültige Datei ändert weiterhin nichts, und alle Beanstandungen werden genannt. Eine Beanstandung nennt den Namen und den Grund, nicht mehr den Wert aus der Datei.
+- **Verhalten geändert – Zurückspielen nur mit Haken:** Zwischen dem Feld für die Sicherungsdatei und dem Knopf „Einstellungen zurückspielen“ steht ein Haken „Ja, die geltenden Einstellungen durch die Sicherung ersetzen“, ab Werk aus. Ohne ihn wird die Datei nicht gelesen und nichts geändert, und die Meldung sagt es. Haken, Text und die Prüfung der hochgeladenen Datei (über das Formular gekommen, höchstens 256 KB) kommen aus dem gemeinsamen Sicherungsmodul und sind in allen Plugins dieser Reihe gleich.
+- **Meldung nach dem Zurückspielen:** Sie sagt jetzt zusätzlich, dass der Minutentakt die zurückgespielten Einstellungen bei seinem nächsten Lauf liest, und ob der Einrichtungstoken übernommen wurde. Die Zweitschriften neben dem Konfigordner (Einstellungen und Einrichtungstoken) werden danach nachgemessen; weicht eine ab, sagt die Meldung es.
+- **Einmalmeldung am Ort der Hausregel:** Die Meldung nach einem Knopfdruck liegt jetzt unter `data/plugins/dockerng/einmalmeldung.json`, nicht mehr unter `meldung.json`.
+- **Knopf „Dokumentation“:** `plugin.cfg` nennt jetzt `WEBSITE=` mit diesem Repository; LoxBerry übernimmt die Adresse bei der Installation und zeigt sie in der Plugin-Verwaltung als Knopf.
+- Gemessen mit dem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, der über einen Webserver die echten Knöpfe drückt, mit Sicherungen aller Vorfassungen im Arbeitsordner (1.3.2 bis 1.3.28: 20 mit Kopf angenommen, 7 ohne Kopf abgewiesen); am Gerät nicht gemessen.
+- **Sicherungsmodul 1.2.11:** Wandelt ein Plugin beim Zurückspielen eine Sicherung aus einer Textdatei um, sagt die Meldung das jetzt mit einem gemeinsamen Satz, und Mängel darin werden in allen Plugins mit denselben Bezeichnungen genannt. Dieses Plugin wandelt keine Textdateien um; an seinem Verhalten ändert sich dadurch nichts. Gemessen mit dem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4. Am Gerät nicht gemessen.
 
 ## Neu in 1.3.28
 

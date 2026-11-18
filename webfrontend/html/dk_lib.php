@@ -58,6 +58,11 @@ if (!function_exists('lb_wurzel_ermitteln')) {
  * selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
 
+/* 1.3.29: Gemeinsames Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des Hausherrn
+ * 12.11.2026, Umbau dieser Linie 18.11.2026). Einstellungen sichern und zurueckspielen laufen darueber; diese Linie
+ * uebergibt nur dk_sicherung_beschreibung(). Liegt neben dieser Datei und schuetzt sich gegen doppeltes Laden. */
+require_once __DIR__ . '/sicherung.php';
+
 function dk_paths()
 {
     /* Gruppe 21 (1.3.19; D9, Entwurf 3.4, Bauart fer_paths() aus Ferien 1.2.28):
@@ -336,7 +341,7 @@ function dk_wert_pruefen($k, $w)
             /* is_string ZUERST: eine Liste ist kein leeres Token und kein
              * "Array", sondern ein unzulaessiger Wert. Leer heisst "kein
              * Token gesichert" (Regeln/05, VolkswagenID 0.9.12) - das
-             * entscheidet dk_sicherung_lesen(). Sonst mindestens zwoelf
+             * entscheidet das Sicherungsmodul (Regel 3). Sonst mindestens zwoelf
              * Zeichen aus dem, was ohne Kodierung in eine Adresse passt:
              * dk_token_neu() erzeugt 24, und ein Wort wie "Array" darf nie
              * als Merkwort gelten. */
@@ -354,20 +359,6 @@ function dk_wert_pruefen($k, $w)
                 if (!in_array($n, $aus, true)) { $aus[] = $n; }
             }
             return array(true, $aus, '');
-        case 'tts':
-            /* Nr. 36 b: eine Sicherung dieses Plugins traegt nie ein Sprechtoken - traegt die Datei
-             * eines, wird sie abgewiesen. Ausgabeart, Adresse (Heimnetz) und Vorlage prueft das Modul;
-             * die geltenden Sprechtoken bleiben. Der Mangeltext nennt nie einen Wert. */
-            $dk_tm = ansage_sicherung_mangel($w);
-            if ($dk_tm) { return array(false, null, sprintf(dk_t('DURCHSAGE.SICH_TOKEN'), implode(', ', $dk_tm))); }
-            $dk_tg = '';
-            $dk_tp = ansage_wert_pruefen($w, $dk_tg, dk_ansage_modi());
-            if ($dk_tp === null) {
-                return array(false, null, sprintf(dk_t('DURCHSAGE.SICH_WERT'), ansage_kennung_text($dk_tg, dk_ansage_k())));
-            }
-            $dk_tj = dk_tts(dk_config());
-            list($dk_tv) = ansage_vervollstaendigen($dk_tp + $dk_tj);
-            return array(true, ansage_sicherung_tokens_behalten($dk_tv, $dk_tj), '');
         case 'neustart_erlaubt':
             // Seit 1.3.19 (V3): eine Liste von Containernamen wie die Wachliste.
             if (!is_array($w)) { return array(false, null, dk_t('FEHLER.NAME')); }
@@ -2842,7 +2833,8 @@ function dk_markierung($feld)
 
 function dk_flash_datei()
 {
-    return dk_paths()['datadir'] . '/meldung.json';
+    /* 1.3.29: am Ort der Hausregel (Regeln/04, Raumklima 0.11.8) - bis 1.3.28 meldung.json. */
+    return dk_paths()['datadir'] . '/einmalmeldung.json';
 }
 
 function dk_flash_schreiben($daten)
@@ -4157,218 +4149,234 @@ function dk_schluesselkollisionen($liste = null)
 }
 
 
+/* ==================================================================
+ * Einstellungen sichern und zurueckspielen (1.3.29)
+ *
+ * Seit 1.3.29 ueber das gemeinsame Sicherungsmodul (sicherung.php neben dieser
+ * Datei, Abschrift von Werkzeuge/gemeinsam/sicherung.php; Auftrag des
+ * Hausherrn 12.11.2026 "eine gemeinsame Vorlage ... fuer alle Plugins", Umbau
+ * dieser Linie 18.11.2026). Lesen, Pruefen, Kopf, Kennzeichen, Haken und
+ * Meldungen macht das Modul fuer alle Linien gleich; diese Linie uebergibt nur
+ * ihre Beschreibung (dk_sicherung_beschreibung()). Bis 1.3.28 stand hier eine
+ * eigene Lesefunktion (dk_sicherung_lesen()) mit eigenem Kopf.
+ *
+ * Was sich dadurch aendert, steht im README unter "Neu in 1.3.29". Kurz:
+ *   - Kennzeichen _plugin = Name des Repositorys; "Docker NG" (1.3.9 bis
+ *     1.3.28) wird als frueheres Kennzeichen weiter angenommen. Eine Datei
+ *     ohne _plugin (bis 1.3.8 die rohe Konfiguration ohne Kopf) wird
+ *     abgewiesen - sie ist von einer fremden nicht sicher zu unterscheiden
+ *     (Regeln/05, Regel 1).
+ *   - Ein unbekannter Schluessel weist die Datei nicht mehr ab; er wird
+ *     verworfen und mit Namen genannt.
+ *   - Der Einrichtungstoken von Portainer (config/plugins/<ordner>/setup_token)
+ *     reist als Teil setup_token mit (Entscheidung des Hausherrn 18.11.2026)
+ *     und wird beim Zurueckspielen samt Zweitschrift geschrieben - nur, wenn
+ *     auf dem Geraet noch keiner liegt; sonst bleibt der geltende, und die
+ *     Meldung sagt es (dk_sicherung_setup_token_lesen()).
+ *   - Steuerfreigabe und Neustartliste (E-E12) kommen weiter nie aus einer
+ *     Sicherung; seit 1.3.29 stehen sie auch nicht mehr darin ('nie_aus_datei').
+ * ================================================================== */
+
 /**
- * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
+ * Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul.
  *
- * Die sieben Punkte aus REGELN_2, und der wichtigste ist der dritte: eine
- * halb gueltige Datei ueberschreibt GAR NICHTS. Wer eine Sicherung
- * zurueckspielt, will entweder den ganzen Stand oder gar keinen - eine zur
- * Haelfte uebernommene Konfiguration ist schlimmer als die alte, und man
- * sieht es ihr nicht an.
- *
- * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
- * stammen aus einer anderen Fassung oder einem anderen Plugin.
- *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
+ * 'pflicht' (ab Werk) gilt fuer die zehn Schluessel, die jede Sicherung mit
+ * Kopf seit 1.3.9 traegt (gemessen 18.11.2026 an dk_vorgaben() der Archive
+ * 1.3.9 bis 1.3.28). Spaeter hinzugekommen und deshalb 'behalten': die
+ * Ansage (tts und die vier Anlaesse, seit 1.3.12) und endpunkt_ein,
+ * befehle_mqtt_ein (seit 1.3.19) - der geltende Wert bleibt und wird genannt
+ * (Regeln/05, Welle 1 Nr. 6; bis 1.3.28 dk_spaet_schluessel() und
+ * dk_ansage_schluessel() in der eigenen Lesefunktion).
  */
-function dk_sicherung_lesen($roh, &$namen = null)
+function dk_sicherung_beschreibung()
 {
-    /* $namen (X-3, Verbesserungsbau 30.09.2026): die NAMEN der beanstandeten
-     * Schluessel, nie Werte - fuer die Warnung beim Sichern
-     * (dk_rueckspiel_maengel). */
-    /* Rueckgabe seit 1.3.9: array(Konfiguration|null, Beanstandungen[],
-     * uebernommene Werte, Hinweise[]).
-     *
-     * SEIT 1.3.9 wird JEDER Wert geprueft, mit denselben Grenzen wie im
-     * Formular (C2, Bauart E). Bis dahin stand hier nur $neu[$k] = $w -
-     * gemessen unter PHP 7.4, 8.4 und 8.5: ein Token als Liste wurde
-     * uebernommen, Konfiguration UND Zweitschrift trugen die Liste, der
-     * Endpunkt nahm danach ?token=Array an, und das Formularmerkmal war
-     * hash_hmac('Array') - fuer jeden ausrechenbar. Port 99999, der Name
-     * 'x;rm -rf' und das Praefix 'a/b#' gingen roh in die Datei.
-     *
-     * Der lesbare Kopf (_hinweis, _stand) wird uebergangen, nicht
-     * beanstandet (O10, Regeln/05). Veraltete Schluessel (portainer_name)
-     * werden uebergangen und genannt, damit eine Sicherung aus 1.3.8
-     * zurueckspielbar bleibt - ein unzulaessiger Wert darin wird trotzdem
-     * beanstandet. Ein leeres Token heisst "kein Token gesichert": das
-     * geltende Merkwort bleibt, und die Meldung sagt das.
-     */
-    $mangel = array();
-    $hinweis = array();
-    $namen = array();
-    $dk_nie = array();
-    $dk_spaet = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        return array(null, array(dk_t('EINST.SICH_KEIN_JSON')), 0, array());
+    $p = dk_paths();
+    $tts = array_merge(array_keys(ansage_vorgaben('aus')), dk_mit_zielen() ? array('ziele') : array(), ansage_geheim());
+    $tts_knoten = in_array('ziele', $tts, true)
+        ? array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))) : array();
+    $behalten = array_merge(dk_ansage_schluessel(), array_diff(dk_spaet_schluessel(), dk_nie_aus_sicherung()));
+    $schluessel = array();
+    foreach (dk_vorgaben() as $k => $v) {
+        if ($k === 'tts' || in_array($k, dk_nie_aus_sicherung(), true)) { continue; }
+        /* Die Normalform des Formulars (Zahl statt Text, Liste ohne Doppel) - dieselbe Pruefung wie bis 1.3.28. */
+        $schluessel[$k] = array('wandeln' => function ($w) use ($k) {
+            list($ok, $norm) = dk_wert_pruefen($k, $w);
+            return $ok ? $norm : $w;
+        });
     }
-    $neu = dk_vorgaben();
-    $bekannt = array_keys($neu);
-    $anzahl = 0;
-    foreach ($daten as $k => $w) {
-        $k = (string) $k;
-        if ($k !== '' && $k[0] === '_') { continue; }
-        if (in_array($k, dk_veraltete_schluessel(), true)) {
-            if (!dk_name_gueltig($w)) {
-                $mangel[] = sprintf(dk_t('EINST.SICH_WERT'), dk_e($k), dk_e(dk_wert_zeigen($w)),
-                                    dk_t('FEHLER.NAME'));
-                $namen[] = $k;
-            } else {
-                $hinweis[] = sprintf(dk_t('EINST.SICH_VERALTET'), dk_e($k));
+    $schluessel['tts'] = sicherung_block($tts, $tts_knoten) + array(
+        'sichern' => 'ansage_sicherung_bereinigen',
+        'pruefen' => 'dk_sicherung_tts_pruefen',
+        'wandeln' => function ($w) {
+            $g = '';
+            $t = ansage_wert_pruefen(ansage_sicherung_bereinigen($w), $g, dk_ansage_modi());
+            return is_array($t) ? $t : $w;
+        });
+    foreach ($behalten as $k) { $schluessel[$k]['fehlt'] = 'behalten'; }
+    return array(
+        'kennzeichen' => 'LoxBerry-Plugin-Docker-NG',
+        // 1.3.9 bis 1.3.28: "Docker NG" (Leerzeichen, keine Namensform des Moduls)
+        'kennzeichen_frueher' => array('Docker NG'),
+        'hinweis' => dk_t('EINST.SICH_KOPF'),
+        'home' => (string) $p['home'], 'ordner' => (string) $p['plugin'],
+        'plugin_cfg' => dirname(dirname(__DIR__)) . '/plugin.cfg',
+        'vorgaben' => dk_vorgaben(),
+        'schluessel' => $schluessel,
+        'alt' => dk_veraltete_schluessel(),
+        'nie_aus_datei' => dk_nie_aus_sicherung(),
+        'teile' => array('setup_token' => 'dk_sicherung_setup_token_lesen'),
+        'pruefen' => function ($k, $w) {
+            list($ok, , $warum) = dk_wert_pruefen($k, $w);
+            return $ok ? '' : sprintf(dk_t('EINST.SICH_WERT'), dk_e($k), $warum);
+        },
+        'quer' => function ($neu) {
+            if (isset($neu['portainer_port'], $neu['portainer_https_port'])
+                && (int) $neu['portainer_port'] === (int) $neu['portainer_https_port']) {
+                return array(array('portainer_port', dk_t('FEHLER.PORT_GLEICH')));
             }
-            continue;
-        }
-        if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(dk_t('EINST.SICH_FREMD'), dk_e($k));
-            $namen[] = $k;
-            continue;
-        }
-        list($ok, $norm, $warum) = dk_wert_pruefen($k, $w);
-        if (!$ok && $k === 'tts') {
-            /* Nr. 36 b: ohne den Wert - er kann ein Sprechtoken tragen. */
-            $mangel[] = dk_e($warum);
-            $namen[] = $k;
-            continue;
-        }
-        if (!$ok) {
-            $mangel[] = sprintf(dk_t('EINST.SICH_WERT'), dk_e($k), dk_e(dk_wert_zeigen($w)), $warum);
-            $namen[] = $k;
-            continue;
-        }
-        if (in_array($k, dk_nie_aus_sicherung(), true)) {
-            /* E-E12 (1.3.19): Steuerfreigabe und Neustartliste kommen nie aus einer Sicherung - ein eingreifender
-             * Weg wird nur durch einen Klick in DIESER Oberflaeche scharf. Der Wert ist geprueft (ein
-             * unzulaessiger bleibt eine Beanstandung), uebernommen wird der geltende. */
-            $neu[$k] = dk_config()[$k];
-            $dk_nie[] = $k;
-            $anzahl++;
-            continue;
-        }
-        $neu[$k] = $norm;
-        $anzahl++;
-    }
-    if ($anzahl === 0) {
-        $mangel[] = dk_t('EINST.SICH_LEER');
-    }
-    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall
-     * (VolkswagenID 0.9.11, am 07.09.2026 ueber den Bestand ausgerollt).
-     * Verglichen wird gegen die VORGABEN. */
-    $fehlend = array();
-    $dk_abeh = array();
-    foreach (array_keys(dk_vorgaben()) as $fk) {
-        if (!array_key_exists($fk, $daten)) {
-            /* Ein Schluessel, den es erst seit 1.3.9 gibt, fehlt in jeder
-             * aelteren Sicherung. Er ist kein Mangel: der geltende Wert
-             * bleibt, und die Meldung sagt das (C12). */
-            /* Nr. 36 b: ebenso die Ansage (tts und die Anlaesse) aus einer Sicherung von vor 1.3.12. */
-            if (in_array($fk, dk_ansage_schluessel(), true)) {
-                $neu[$fk] = dk_config()[$fk];
-                $dk_abeh[] = $fk;
-                continue;
-            }
-            /* N2 (1.3.19): die Schluessel, die eine 1.3.18-Sicherung nicht kennt - der GELTENDE Wert bleibt
-             * (nicht die Vorgabe: sonst schaltete eine alte Sicherung den HTTP-Weg einer Bestandsanlage ab). */
-            if (in_array($fk, dk_spaet_schluessel(), true)) {
-                $neu[$fk] = dk_config()[$fk];
-                $dk_spaet[] = $fk;
-                continue;
-            }
-            if ($fk === 'portainer_https_port') {
-                $neu[$fk] = (int) dk_config()[$fk];
-                $hinweis[] = sprintf(dk_t('EINST.SICH_NEU_VORGABE'), dk_e($fk));
-                continue;
-            }
-            $fehlend[] = $fk;
-        }
-    }
-    if ($dk_abeh) {
-        $hinweis[] = sprintf(dk_t('DURCHSAGE.SICH_BEHALTEN'), dk_e(implode(', ', $dk_abeh)));
-    }
-    /* Welle Mehrfach-Ziele (1.3.20): dk_wert_pruefen('tts') nimmt "$dk_tp + $dk_tj" - die geltenden weiteren Ziele
-     * einer Sicherung ohne Liste blieben schon bisher, still. Die Spaetliste prueft den Block der Datei und nennt sie
-     * im Hinweis der Spaetschluessel (Gruppe 21). */
-    $dk_tsneu = array('tts' => (isset($daten['tts']) && is_array($daten['tts'])) ? $daten['tts'] : null);
-    $dk_tsjetzt = array('tts' => dk_tts(dk_config()));
-    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
-     * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
-     * heisst "keine weiteren Ziele" und wird so uebernommen. */
-    $dk_spaete = array();
-    if (!$mangel && is_array($dk_tsneu['tts']) && function_exists('ansage_sicherung_spaet')) {
-        list($dk_tsneu['tts'], $dk_spaete) = ansage_sicherung_spaet($dk_tsneu['tts'],
-            (isset($dk_tsjetzt['tts']) && is_array($dk_tsjetzt['tts'])) ? $dk_tsjetzt['tts'] : null);
-    }
-    foreach ($dk_spaete as $dk_sn) { $dk_spaet[] = $dk_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
-    if ($dk_spaet) {
-        $hinweis[] = sprintf(dk_t('EINST.SICH_SPAET'), dk_e(implode(', ', $dk_spaet)));
-    }
-    if ($dk_nie) {
-        $hinweis[] = sprintf(dk_t('EINST.SICH_STEUER'), dk_e(implode(', ', $dk_nie)));
-    }
-    if (!$mangel && (int) $neu['portainer_port'] === (int) $neu['portainer_https_port']) {
-        $mangel[] = dk_t('FEHLER.PORT_GLEICH');
-        $namen[] = 'portainer_port';
-        $namen[] = 'portainer_https_port';
-    }
-    if ($fehlend) {
-        $namen = array_merge($namen, $fehlend);
-        $mangel[] = sprintf(dk_t('EINST.SICH_FEHLEND'), count($fehlend),
-            dk_e(implode(', ', $fehlend)));
-    }
-    if (!$mangel && $neu['aktionstoken'] === '') {
-        $neu['aktionstoken'] = (string) dk_config()['aktionstoken'];
-        $hinweis[] = dk_t('EINST.SICH_TOKEN_BLEIBT');
-    }
-    return array($mangel ? null : $neu, $mangel, $anzahl, $hinweis);
-}
-
-/** Ein Wert aus der Sicherung, kurz und lesbar, fuer eine Beanstandung. */
-function dk_wert_zeigen($w)
-{
-    $t = is_string($w) ? $w : (string) json_encode($w, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    return strlen($t) > 40 ? substr($t, 0, 40) . '…' : $t;
+            return array();
+        },
+        'jetzt' => function () { return dk_config(); },
+        't' => 'dk_t',
+        'e' => 'dk_e',
+        'log' => 'dk_log',
+    );
 }
 
 /**
- * Die Sicherungsdatei bauen (O10): ein lesbarer Kopf mit '_' und alle
- * Schluessel der Vorgaben - samt Aktionstoken, ohne den die Datei nach dem
- * Zurueckspielen wertlos waere. Das Formularmerkmal gehoert nicht hinein.
+ * Der Block tts einer Sicherung: ein Sprechtoken weist die Datei ab (am Wert,
+ * wie er in der Datei steht - Modul 1.2.0, $roh); Ausgabeart, Adresse und
+ * Vorlage wie im Formular. Der Text nennt nie einen Wert. Bis 1.3.28 im Zweig
+ * 'tts' von dk_wert_pruefen().
+ */
+function dk_sicherung_tts_pruefen($w, $k, $neu, $roh)
+{
+    $tm = ansage_sicherung_mangel($roh);
+    if ($tm) { return sprintf(dk_t('DURCHSAGE.SICH_TOKEN'), dk_e(implode(', ', $tm))); }
+    $g = '';
+    if (ansage_wert_pruefen(is_array($w) ? ansage_sicherung_bereinigen($w) : $w, $g, dk_ansage_modi()) === null) {
+        return sprintf(dk_t('DURCHSAGE.SICH_WERT'), dk_e(ansage_kennung_text($g, dk_ansage_k())));
+    }
+    return '';
+}
+
+/**
+ * Der Teil setup_token einer Sicherung: der Einrichtungstoken von Portainer
+ * (Entscheidung des Hausherrn 18.11.2026, mitsichern). Er gehoert nicht in
+ * dockerng.json, sondern in seine eigene Datei (0600) mit Zweitschrift
+ * daneben - geschrieben in dk_sicherung_speichern(). Leer heisst "keiner
+ * gesichert": der geltende bleibt. Eine andere Form als die, die
+ * dk_setup_token_vorgegeben() liest, wird abgewiesen, nicht zurechtgebogen.
+ * Liegt auf diesem Geraet schon ein Einrichtungstoken, bleibt er, und die
+ * Meldung sagt es (Frage 15 der Nacht 18.11.2026, Entscheidung des Hausherrn
+ * 18.11.2026 "Ich folge deinen Empfehlungen"): postroot.sh legt ihn bei der
+ * Installation fest, und der laufende Portainer-Container fuehrt genau ihn in
+ * seiner Befehlszeile - der Token eines anderen Geraets passte nicht dazu.
+ * Uebernommen wird der Token der Sicherung nur, wenn hier noch keiner liegt.
+ * Gleicht er dem geltenden, gibt es nichts zu sagen.
+ * Rueckgabe fuer das Modul: array(Token|'', Beanstandungen[], Hinweise[]).
+ */
+function dk_sicherung_setup_token_lesen($w)
+{
+    if ($w === '') {
+        return array('', array(), dk_setup_token_vorgegeben() !== '' ? array(dk_t('EINST.SICH_SETUP_BLEIBT')) : array());
+    }
+    if (!is_string($w) || preg_match('/^[A-Za-z0-9._\-]{6,128}\z/', $w) !== 1) {
+        return array(null, array(dk_t('EINST.SICH_SETUP_FORM')));
+    }
+    $fest = dk_setup_token_vorgegeben();
+    if ($fest !== '') {
+        return array('', array(), $fest !== $w ? array(dk_t('EINST.SICH_SETUP_GERAET')) : array());
+    }
+    return array($w, array());
+}
+
+/**
+ * Speichern beim Zurueckspielen (Rueckruf 'speichern' des Moduls): erst der
+ * Einrichtungstoken samt Zweitschrift, dann die Konfiguration samt
+ * Zweitschrift (dk_config_schreiben()). Schlaegt die Konfiguration fehl,
+ * wird der Token auf den Stand davor zurueckgesetzt - es bleibt nichts halb.
+ * Gespeichert wird genau der Stand, den das Modul liefert (Bauform des
+ * Hausherrn 15.11.2026).
+ */
+function dk_sicherung_speichern(array $neu, array $r)
+{
+    $tok = (isset($r['teile']['setup_token']) && is_string($r['teile']['setup_token'])) ? $r['teile']['setup_token'] : '';
+    $p = dk_paths();
+    $datei = $p['configdir'] . '/setup_token';
+    $vorher = array();
+    if ($tok !== '') {
+        foreach (array($datei, $p['setup_zweit']) as $f) {
+            $vorher[$f] = @is_file($f) ? @file_get_contents($f) : null;
+        }
+        if (!@is_dir($p['configdir'])) { @mkdir($p['configdir'], 0755, true); }
+        if (!dk_datei_schreiben($datei, $tok, 0600) || !dk_datei_schreiben($p['setup_zweit'], $tok, 0600)) {
+            dk_log('Der Einrichtungstoken aus der Sicherung liess sich nicht schreiben - nichts zurueckgespielt.');
+            dk_sicherung_token_zurueck($vorher);
+            return false;
+        }
+    }
+    if (!dk_config_schreiben($neu)) {
+        dk_sicherung_token_zurueck($vorher);
+        return false;
+    }
+    /* Traegt die Datei keinen Token, bleibt der geltende - seine Zweitschrift wird mitgezogen wie die der
+     * Konfiguration (dk_config_schreiben()), damit das Modul danach beide Paare inhaltsgleich misst. */
+    $fest = dk_setup_token_vorgegeben();
+    if ($tok === '' && $fest !== '' && (!@is_file($p['setup_zweit']) || (string) @file_get_contents($p['setup_zweit']) !== (string) @file_get_contents($datei))) {
+        if (!dk_datei_schreiben($p['setup_zweit'], (string) @file_get_contents($datei), 0600)) {
+            dk_log('Die Zweitschrift des Einrichtungstokens liess sich nicht schreiben: ' . $p['setup_zweit']);
+        }
+    }
+    return true;
+}
+
+/** Den Einrichtungstoken und seine Zweitschrift auf den Stand vor dem Zurueckspielen setzen. */
+function dk_sicherung_token_zurueck(array $vorher)
+{
+    foreach ($vorher as $f => $inhalt) {
+        if ($inhalt === null) { @unlink($f); } elseif (is_string($inhalt)) { dk_datei_schreiben($f, $inhalt, 0600); }
+    }
+}
+
+/**
+ * Die Paare Datei/Zweitschrift, die das Modul nach dem Zurueckspielen misst
+ * (Rueckruf 'zweitschrift', Modul 1.2.7): die Konfiguration und - wenn es ihn
+ * gibt - der Einrichtungstoken.
+ */
+function dk_sicherung_zweitschriften()
+{
+    $p = dk_paths();
+    $paare = array(array($p['config'], $p['sicherung']));
+    if (@is_file($p['configdir'] . '/setup_token')) { $paare[] = array($p['configdir'] . '/setup_token', $p['setup_zweit']); }
+    return $paare;
+}
+
+/**
+ * Die Sicherungsdatei als Feld (Knopf "Einstellungen sichern"): Kopf und
+ * Inhalt baut das Modul aus der geltenden Konfiguration, dazu der
+ * Einrichtungstoken, wenn einer vorgegeben ist. Das Aktionstoken ist dabei -
+ * ohne es waere die Datei nach dem Zurueckspielen wertlos; das
+ * Formularmerkmal, die Sprechtoken und Steuerfreigabe/Neustartliste nicht.
+ * Wuerde das eigene Zurueckspielen die Datei abweisen, sagt es _warnung (nur
+ * Namen).
  */
 function dk_sicherung_bauen()
 {
-    $cfg = dk_config();
-    $aus = array(
-        '_hinweis' => dk_t('EINST.SICH_KOPF'),
-        '_stand'   => date('Y-m-d H:i:s'),
-        '_plugin'  => 'Docker NG',
-    );
-    foreach (array_keys(dk_vorgaben()) as $k) {
-        $aus[$k] = $cfg[$k];
-    }
-    /* Nr. 36 b: die Sprechtoken der Sprachausgabe gehen nie in eine Sicherung. */
-    if (isset($aus['tts']) && is_array($aus['tts'])) { $aus['tts'] = ansage_sicherung_bereinigen($aus['tts']); }
-    return $aus;
+    $st = dk_setup_token_vorgegeben();
+    return sicherung_bauen(dk_sicherung_beschreibung(), dk_config(), $st !== '' ? array('setup_token' => $st) : array());
 }
 
 /**
  * X-3 (Verbesserungsbau 30.09.2026): Wuerde die EIGENE Sicherung das eigene
- * Zurueckspielen bestehen? Geprueft wird mit DERSELBEN Funktion wie beim
- * Zurueckspielen (dk_sicherung_lesen). Rueckgabe: die Namen der
- * beanstandeten Schluessel, nie Werte; leer = sie besteht.
- * Anlass: dk_config_normieren() laesst beim Lesen Ports von 1 bis 65535
- * durch, das Zurueckspielen verlangt 1024 bis 65535 - ein von Hand
- * eingetragener Port 80 stand in der Sicherung, und die eigene Datei wurde
- * danach abgewiesen.
+ * Zurueckspielen bestehen? Seit 1.3.29 dieselbe Pruefung des Moduls
+ * (sicherung_selbstpruefung()). Rueckgabe: die Namen der beanstandeten
+ * Schluessel, nie Werte; leer = sie besteht.
  */
 function dk_rueckspiel_maengel($aus = null)
 {
     if ($aus === null) { $aus = dk_sicherung_bauen(); }
-    $js = json_encode($aus, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    if ($js === false) { return array('json'); }
-    $namen = array();
-    list($neu) = dk_sicherung_lesen($js, $namen);
-    if ($neu !== null) { return array(); }
-    return $namen ? array_values(array_unique($namen)) : array('?');
+    return sicherung_selbstpruefung(dk_sicherung_beschreibung(), $aus, dk_config());
 }
 
 /* ==================================================================

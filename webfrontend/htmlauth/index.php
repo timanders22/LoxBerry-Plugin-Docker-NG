@@ -741,24 +741,16 @@ if (@is_readable('/etc/docker/daemon.json')) {
 
 /* ---------------- Einstellungen sichern ----------------
  *
- * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
- * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
- * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
- * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken und dem
+ * Einrichtungstoken von Portainer. Ohne sie stuenden nach dem Zurueckspielen
+ * alle Felder richtig, und das Plugin kaeme trotzdem nicht an die Anlage; die
+ * Datei waere wertlos. Damit traegt sie Geheimnisse, und der Hinweis am Knopf
+ * sagt das. Seit 1.3.29 baut das gemeinsame Sicherungsmodul Kopf und Inhalt
+ * (dk_sicherung_bauen()); wuerde das eigene Zurueckspielen die Datei abweisen,
+ * steht das als _warnung im Kopf - nur Namen, nie Werte (X-3). */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dk_sichern'])) {
-    /* X-3 (Verbesserungsbau 30.09.2026): wuerde diese Sicherung das eigene
-     * Zurueckspielen nicht bestehen, steht das als _warnung im Kopf - nur
-     * Namen, nie Werte. Geliefert wird sie trotzdem vollstaendig; das
-     * Zurueckspielen uebergeht Schluessel mit '_'. */
-    $dk_sich = dk_sicherung_bauen();
-    $dk_sich_namen = dk_rueckspiel_maengel($dk_sich);
-    if ($dk_sich_namen) {
-        $dk_sich = array('_warnung' => sprintf(dk_t('EINST.SICH_WARN_KOPF'), implode(', ', $dk_sich_namen)))
-            + $dk_sich;
-    }
-    $dk_js = json_encode($dk_sich,
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($dk_js !== false) {
+    $dk_js = sicherung_json(dk_sicherung_bauen());
+    if ($dk_js !== '') {
         while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="docker_einstellungen_'
@@ -771,57 +763,75 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dk_sichern'])) {
 
 /* ---------------- Einstellungen zurueckspielen ----------------
  *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
- * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
- * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+ * 1.3.29: ueber das gemeinsame Sicherungsmodul, in jeder Linie gleich. Den
+ * Eingang prueft sicherung_eingang(): zuerst der Haken zurueck_ok (ohne ihn
+ * wird nichts gelesen und nichts geaendert), dann is_uploaded_file() (sonst
+ * liesse sich jede Datei des Servers unterschieben) und die Groessengrenze des
+ * Moduls. sicherung_zurueckspielen() liest, prueft, verwirft Unbekanntes mit
+ * Namen, laesst leere Werte den bisherigen stehen und aendert bei einer
+ * Beanstandung GAR NICHTS (alle Beanstandungen, nicht nur die erste). Was
+ * diese Linie davor und danach tut, steht in den Rueckrufen. */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dk_zurueck'])) {
-    $dk_m = array();
-    if (!isset($_FILES['dk_sicherung']) || !is_array($_FILES['dk_sicherung'])
-        || !isset($_FILES['dk_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['dk_sicherung']['tmp_name'])) {
-        $dk_m['fehler'] = array(dk_t('EINST.SICH_KEINE_DATEI'));
-    } elseif ((int) $_FILES['dk_sicherung']['size'] > 262144) {
-        $dk_m['fehler'] = array(dk_t('EINST.SICH_ZU_GROSS'));
+    $dk_b = dk_sicherung_beschreibung();
+    $dk_bfehler = array();
+    list($dk_roh, $dk_ab) = sicherung_eingang($dk_b, $_POST, $_FILES, 'dk_sicherung');
+    if ($dk_ab !== null) {
+        $dk_r = $dk_ab;
     } else {
-        list($dk_neu, $dk_mangel, $dk_n, $dk_shinweis) = dk_sicherung_lesen(
-            (string) @file_get_contents($_FILES['dk_sicherung']['tmp_name']));
-        if ($dk_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. */
-            $dk_m['fehler'] = array(dk_t('EINST.SICH_ABGELEHNT') . ' '
-                                    . implode(' ', $dk_mangel));
-        } elseif (dk_config_schreiben($dk_neu)) {
-            /* BERICHTIGT in 1.3.5: hier stand $dk_meldungen[] - mit n.
-             * Die Variable gab es sonst nirgends, gelesen wurde sie nie.
-             * Ein erfolgreiches Zurueckspielen lief damit voellig stumm ab:
-             * die Konfiguration war geschrieben, und die Seite sagte nichts.
-             * Genau das, wogegen dieses Plugin sonst antritt. PHP meldet den
-             * Fall nicht - das Anhaengen an eine unbekannte Variable legt sie
-             * stillschweigend an. Gefunden beim Umbau auf die Umleitung,
-             * nicht von einem Werkzeug. */
-            $dk_m['meldung'] = sprintf(dk_t('EINST.SICH_UEBERNOMMEN'), $dk_n);
+        $dk_tsspaet = array();
+        $dk_tsbekannt = $dk_b['schluessel']['tts']['schluessel'];
+        /* Nr. 36 b: die Sprechtoken stehen nie in einer Sicherung - eine Datei, die eines traegt, hat die Pruefung
+         * abgewiesen; die geltenden bleiben. Welle Mehrfach-Ziele (1.3.20): fehlt die Liste der weiteren Ziele
+         * (Sicherung einer aelteren Fassung), gelten die jetzigen weiter - genannt im Hinweis. Was der Block der
+         * Datei nicht traegt, gilt weiter wie eingestellt (ansage_vervollstaendigen(), wie bis 1.3.28); aus dem
+         * geltenden Block kommt nur, was der Knoten nennt. */
+        $dk_b['vorbereiten'] = function ($neu, $jetzt) use (&$dk_tsspaet, $dk_tsbekannt) {
+            if (isset($neu['tts']) && is_array($neu['tts'])) {
+                $tj = array_intersect_key(dk_tts($jetzt), $dk_tsbekannt);
+                list($neu['tts'], $dk_tsspaet) = ansage_sicherung_spaet($neu['tts'], $tj);
+                list($tv) = ansage_vervollstaendigen($neu['tts'] + $tj, 'aus');
+                $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $tj);
+            }
+            return $neu;
+        };
+        $dk_b['speichern'] = function ($neu, $jetzt, $r) { return dk_sicherung_speichern($neu, $r); };
+        $dk_b['zweitschrift'] = 'dk_sicherung_zweitschriften';
+        /* Den Dienst nachziehen UND sagen, was mit ihm geschah (Regeln/05). Nur Saetze ohne Werte. */
+        $dk_b['nachziehen'] = function ($neu, $jetzt, $r) use (&$dk_tsspaet, &$dk_bfehler, $dk_roh) {
+            $h = array();
+            if ($dk_tsspaet) { $h[] = sprintf(dk_t('EINST.SICH_SPAET'), implode(', ', $dk_tsspaet)); }
+            if (isset($r['teile']['setup_token']) && is_string($r['teile']['setup_token'])
+                && $r['teile']['setup_token'] !== '') {
+                $h[] = dk_t('EINST.SICH_SETUP_UEBERNOMMEN');
+            }
+            /* E-E12: Steuerfreigabe und Neustartliste kommen nie aus einer Sicherung. Traegt die Datei sie (1.3.19 bis
+             * 1.3.28 schrieben sie), sagt die Meldung, dass sie nicht uebernommen wurden. */
+            $dk_d = json_decode((string) $dk_roh, true);
+            $dk_nie = is_array($dk_d) ? array_values(array_intersect(dk_nie_aus_sicherung(), array_keys($dk_d))) : array();
+            if ($dk_nie) { $h[] = sprintf(dk_t('EINST.SICH_STEUER'), implode(', ', $dk_nie)); }
             /* N6 (1.3.19): anderes Praefix oder MQTT aus aus der Sicherung - die retained Themen des alten Praefixes
-             * werden vorgemerkt wie beim Speichern im Reiter MQTT. Die Bruecke folgt sofort. */
-            if (!empty($dk_cfg['mqtt_aktiv'])
-                && (empty($dk_neu['mqtt_aktiv']) || $dk_neu['mqtt_praefix'] !== $dk_cfg['mqtt_praefix'])) {
-                $dk_nv = dk_mqtt_abraeumen_vormerken($dk_cfg['mqtt_praefix']);
-                if ($dk_nv >= 0) {
-                    $dk_m['meldung'] .= ' ' . sprintf(dk_t('MELDUNG.ABRAEUMEN_VORGEMERKT'), $dk_nv, $dk_cfg['mqtt_praefix']);
-                }
+             * werden vorgemerkt wie beim Speichern im Reiter MQTT. */
+            if (!empty($jetzt['mqtt_aktiv'])
+                && (empty($neu['mqtt_aktiv']) || $neu['mqtt_praefix'] !== $jetzt['mqtt_praefix'])) {
+                $dk_nv = dk_mqtt_abraeumen_vormerken($jetzt['mqtt_praefix']);
+                if ($dk_nv >= 0) { $h[] = sprintf(dk_t('MELDUNG.ABRAEUMEN_VORGEMERKT'), $dk_nv, $jetzt['mqtt_praefix']); }
             }
-            /* SEIT 1.3.28: sagen, was mit der Befehlsbruecke geschah (bis 1.3.27 verworfen). */
+            $h[] = dk_t('EINST.SICH_DIENST');
+            /* SEIT 1.3.28: sagen, was mit der Befehlsbruecke geschah. */
             list($dk_bm, $dk_bf) = dk_bruecke_bericht(dk_bruecke_schalten(dk_config()));
-            if ($dk_bm !== '') { $dk_m['meldung'] .= ' ' . $dk_bm; }
-            if ($dk_bf !== '') { $dk_m['fehler'] = array($dk_bf); }
-            if ($dk_shinweis) {
-                // Hinweise gehen nicht in die Beanstandungsliste (Regeln/04):
-                // uebernommen ist ja alles Gueltige.
-                $dk_m['meldung'] .= ' ' . strip_tags(implode(' ', $dk_shinweis));
-            }
-        } else {
-            $dk_m['fehler'] = array(dk_t('EINST.SICH_SCHREIBFEHLER'));
-        }
+            if ($dk_bm !== '') { $h[] = $dk_bm; }
+            if ($dk_bf !== '') { $dk_bfehler[] = $dk_bf; }     // fertig maskiert (dk_bruecke_bericht())
+            return $h;
+        };
+        $dk_r = sicherung_zurueckspielen($dk_b, $dk_roh);
     }
+    /* Fehler gibt die Seite unmaskiert aus (fertig maskiert vom Modul), die Meldung maskiert sie selbst (dk_e) - deshalb
+     * die Hinweise einmal im Klartext ('e', Regeln/05 "Meldungen als Klartext"). */
+    $dk_mf = sicherung_meldungen($dk_b, $dk_r);
+    $dk_mh = sicherung_meldungen(array('e' => function ($s) { return $s; }) + $dk_b, $dk_r);
+    $dk_m = array();
+    if ($dk_mf['fehler'] || $dk_bfehler) { $dk_m['fehler'] = array_merge($dk_mf['fehler'], $dk_bfehler); }
+    if ($dk_mh['hinweise']) { $dk_m['meldung'] = implode(' ', $dk_mh['hinweise']); }
     dk_weiter('settings', $dk_m);
 }
 
@@ -1367,6 +1377,7 @@ foreach ($dk_fehlende as $dk_fn) { ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="hidden" name="fmt" value="<?= dk_e($dk_fmt) ?>">
     <input data-role="none" type="file" name="dk_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(dk_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="dk_zurueck" value="1"><?= dk_t('EINST.K_ZURUECK') ?></button>
   </form>
 </div>
