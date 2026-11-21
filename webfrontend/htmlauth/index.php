@@ -851,7 +851,8 @@ if (class_exists('LBWeb', false)) {
      * hier ist damit ueberfluessig; die Sprache waehlt LoxBerry selbst.
      */
     // D16 (1.3.19): die Wiki-Seite des Plugins statt der Startseite des Wikis.
-    LBWeb::lbheader('Docker NG', 'https://wiki.loxberry.de/plugins/docker_ng_timanders22/start', 'help.html');
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel('Docker NG', __DIR__), 'https://wiki.loxberry.de/plugins/docker_ng_timanders22/start', 'help.html');
 }
 
 ?>
