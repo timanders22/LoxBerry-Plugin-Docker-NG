@@ -3,9 +3,13 @@
 Richtet **Docker** und **Portainer** auf dem LoxBerry ein und meldet den
 Containerzustand an Loxone.
 
-> **Fassung 1.3.31 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
+> **Fassung 1.3.32 — auf einem LoxBerry mit Debian trixie gebaut, läuft ab PHP 7.4.**
 > Nicht geprüft ist das Verhalten auf älteren LoxBerry-Ständen; deshalb
 > `LB_MINIMUM=3.0.0`.
+
+## Neu in 1.3.32
+
+- Gemeinsames Sprachmodul auf 1.5.0 nachgezogen (Einheitlichkeit aller Linien, Entscheidung des Hausherrn 22.11.2026: Nachtruhe an Nicht-Schultagen). Die Linie trägt die Abschrift, spricht aber nicht nach den Regeln des Moduls. An ihrem Verhalten ändert sich deshalb nichts.
 
 ## Neu in 1.3.31
 
