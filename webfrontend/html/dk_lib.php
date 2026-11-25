@@ -57,11 +57,13 @@ if (!function_exists('lb_wurzel_ermitteln')) {
  * mit weiteren Ausgabezielen, dk_mit_zielen(), Welle Mehrfach-Ziele). Liegt neben dieser Datei; die Datei schuetzt sich
  * selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
+require_once __DIR__ . '/meldung.php';     // Statusmeldungen an SignalBot (seit 1.3.33)
 
 /* 1.3.29: Gemeinsames Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des Hausherrn
  * 12.11.2026, Umbau dieser Linie 18.11.2026). Einstellungen sichern und zurueckspielen laufen darueber; diese Linie
  * uebergibt nur dk_sicherung_beschreibung(). Liegt neben dieser Datei und schuetzt sich gegen doppeltes Laden. */
 require_once __DIR__ . '/sicherung.php';
+require_once __DIR__ . '/haus_bereiche.php';     // gemeinsame Bereiche unter haus/ (seit 1.3.33, Regeln/07)
 
 function dk_paths()
 {
@@ -204,6 +206,8 @@ function dk_vorgaben()
         'ansage_platz'     => 1,
         'ansage_wieder'    => 1,
         'tts'              => ansage_vorgaben('aus'),
+        // 1.3.33: Statusmeldungen an SignalBot (gemeinsames Modul meldung.php), ab Werk aus
+        'meldung'          => meld_vorgaben(dk_meld_anlaesse(), dk_meld_haken_vorgabe()),
         /* Seit 1.3.19 (Entwurf 2.8). endpunkt_ein: der HTTP-Endpunkt (alter Weg) antwortet nur mit 1 - ab Werk 0,
          * eine Bestandsanlage bekommt beim Update 1 (dk_uebergang(), postupgrade.sh). befehle_mqtt_ein: Befehle aus
          * Loxone ueber die Befehlsbruecke annehmen; befehle_mqtt_steuern: der zweite Haken fuer den eingreifenden
@@ -286,6 +290,66 @@ function dk_konfig_taugt($roh)
      * gute Zweitschrift (in WSL gemessen, Installer-Pruefer Fall E3). */
     return isset($d['aktionstoken']) && is_string($d['aktionstoken'])
         && trim($d['aktionstoken']) !== '';
+}
+
+/* ==================================================================
+ * Lade-Beanstandungen (1.3.33; Regeln/05, Sicherungsmodul 1.3.0)
+ *
+ * dk_config_normieren() bringt eine von Hand verbogene Datei fuer den Betrieb in ihre Grenzen und filtert Wach- und
+ * Neustartliste. Das bleibt - aber jede solche Ersetzung wird gemeldet (Reiter Test rot, Seite gelb, einmal ins
+ * Protokoll) und nie in die Datei zurueckgeschrieben.
+ * ================================================================== */
+
+/** Die rohen Werte der Konfigurationsdatei (ohne jede Normierung), null = keine lesbare Datei. Schreibt nichts. */
+function dk_lade_roh()
+{
+    $p = dk_paths();
+    clearstatcache(true, $p['config']);
+    $roh = @is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
+    $d = ($roh !== '' && $roh[0] === '{') ? json_decode($roh, true) : null;
+    return is_array($d) ? $d : null;
+}
+
+/** Die Lade-Beanstandungen: rohe Dateiwerte gegen den verwendeten Stand ($cfg, sonst dk_config()). */
+function dk_lade_beanstandungen($cfg = null)
+{
+    $d = dk_lade_roh();
+    if ($d === null) { return array(); }
+    return sicherung_lade_beanstandungen(dk_sicherung_beschreibung(), $d, is_array($cfg) ? $cfg : dk_config());
+}
+
+/** Vor dem Schreiben: jedes beanstandete Feld, das $cfg nicht geaendert hat, bekommt seinen Dateiwert zurueck.
+ *  Gegen Wiedereintritt gesperrt: dk_config() kann beim ersten Lesen selbst schreiben (Heilung). */
+function dk_lade_behalten(array $cfg)
+{
+    static $drin = false;
+    if ($drin) { return $cfg; }
+    $drin = true;
+    $d = dk_lade_roh();
+    if ($d !== null) {
+        $v = dk_config();
+        list($cfg, ) = sicherung_lade_behalten($cfg, $d, $v, sicherung_lade_beanstandungen(dk_sicherung_beschreibung(), $d, $v));
+    }
+    $drin = false;
+    return $cfg;
+}
+
+/** Takt (dk_takt()): fehlende Einstellungen eintragen, dann die Lade-Beanstandungen einmal melden. */
+function dk_dienst_pflege()
+{
+    $r = dk_config_vervollstaendigen();
+    dk_lade_melden(dk_lade_beanstandungen());     // Kennung D
+    return $r;
+}
+
+/** Einmal je Aenderung ins Protokoll (nur Namen und Gruende, nie Werte). */
+function dk_lade_melden(array $beanst)
+{
+    $d = dk_paths()['datadir'];
+    if ($d === '' || (!@is_dir($d) && !@mkdir($d, 0755, true))) { return; }
+    if (sicherung_lade_melden_faellig($beanst, $d . '/lade_beanstandungen.merk')) {
+        dk_log(sicherung_lade_protokollzeile($beanst));
+    }
 }
 
 /* ---------------- Wertpruefung ----------------
@@ -654,9 +718,13 @@ function dk_config_vervollstaendigen()
     return array_merge($fehlend, array_keys($veraltet));
 }
 
-function dk_config_schreiben($cfg)
+function dk_config_schreiben($cfg, $lade_behalten = true)
 {
     $p = dk_paths();
+    /* 1.3.33 (Lade-Beanstandungen, Regeln/05, Entscheidung des Hausherrn "Dateiwert behalten"): ein beim Laden
+     * beanstandetes Feld, das der neue Stand nicht geaendert hat, behaelt seinen gespeicherten Wert. Nicht beim
+     * Zurueckspielen und nicht beim Knopf "Angezeigte Werte uebernehmen" ($lade_behalten = false). */
+    if ($lade_behalten && is_array($cfg)) { $cfg = dk_lade_behalten($cfg); }
     if (!@is_dir($p['configdir'])) { @mkdir($p['configdir'], 0755, true); }
     if (!dk_json_schreiben($p['config'], $cfg, 0600)) {
         dk_log('Die Konfiguration liess sich NICHT schreiben: ' . $p['config']);
@@ -1486,6 +1554,7 @@ function dk_mqtt($werte, $alt = array(), $erzwingen = false)
     $cfg = dk_config();
     if (empty($cfg['mqtt_aktiv'])) { return $aus; }
     $lage = dk_mqtt_lage();
+    dk_praefix_haus_melden($cfg);   // 1.3.33: Praefix im gemeinsamen Bereich? melden, nicht anhalten
     if (!$lage['udpport']) {
         dk_log_gebremst('mqtt_kein_port',
             'MQTT ist eingeschaltet, aber der LoxBerry nennt keinen UDP-Eingang '
@@ -2398,7 +2467,7 @@ function dk_takt()
         dk_log_gebremst('marke', sprintf(dk_t('LOG.MARKE_ALT'), date('Y-m-d H:i:s', $dk_mz), $p['marke']), 3600);
     }
 
-    dk_config_vervollstaendigen();
+    dk_dienst_pflege();     // 1.3.33: vervollstaendigen und Lade-Beanstandungen einmal melden (Regeln/05)
     $cfg = dk_config();
     $alt = dk_zustandsdatei(true);
     $jetzt = time();
@@ -2515,6 +2584,8 @@ function dk_takt()
         }
         /* Nr. 36 b (Stufe 2): die Ansage, ab Werk aus - unabhaengig von der Meldung oben. */
         $neu['ansage'] = dk_ansage_befund($befund, $vorher, isset($alt['ansage']) ? $alt['ansage'] : array(), $jetzt);
+        /* 1.3.33: derselbe Wechsel an SignalBot (ab Werk aus, eigener Haken je Anlass). */
+        dk_meld_befund($befund, $vorher);
         $neu['befund'] = $befund['kennung'];
     }
 
@@ -4213,6 +4284,7 @@ function dk_sicherung_beschreibung()
             return is_array($t) ? $t : $w;
         });
     foreach ($behalten as $k) { $schluessel[$k]['fehlt'] = 'behalten'; }
+    $schluessel['meldung'] = meld_sicherung_knoten(dk_meld_anlaesse(), dk_meld_k());     // 1.3.33: fehlt -> behalten
     return array(
         'kennzeichen' => 'LoxBerry-Plugin-Docker-NG',
         // 1.3.9 bis 1.3.28: "Docker NG" (Leerzeichen, keine Namensform des Moduls)
@@ -4225,6 +4297,8 @@ function dk_sicherung_beschreibung()
         'alt' => dk_veraltete_schluessel(),
         'nie_aus_datei' => dk_nie_aus_sicherung(),
         'teile' => array('setup_token' => 'dk_sicherung_setup_token_lesen'),
+        /* 1.3.33: nie mit Wert in den Lade-Beanstandungen (Modul 1.3.0) - die Sprechtoken. */
+        'geheim' => array_map(function ($n) { return 'tts.' . $n; }, ansage_geheim()),
         'pruefen' => function ($k, $w) {
             list($ok, , $warum) = dk_wert_pruefen($k, $w);
             return $ok ? '' : sprintf(dk_t('EINST.SICH_WERT'), dk_e($k), $warum);
@@ -4316,7 +4390,7 @@ function dk_sicherung_speichern(array $neu, array $r)
             return false;
         }
     }
-    if (!dk_config_schreiben($neu)) {
+    if (!dk_config_schreiben($neu, false)) {     // 1.3.33: Werte einer Sicherung sind ausdruecklich (Regeln/05)
         dk_sicherung_token_zurueck($vorher);
         return false;
     }
@@ -5325,4 +5399,179 @@ function dk_bruecke_lage()
     $wie = !$pids ? 'kein Dienst' : ($alter === null ? 'kein Zustand' : ($alter > BB_WACHE_GRENZE
         ? 'Zustand ' . $alter . ' s alt' : 'ohne Abo' . (is_array($zu) && !empty($zu['fehler']) ? ': ' . $zu['fehler'] : '')));
     return array(false, sprintf(dk_t('BEFEHL.T_STEHT'), $wie));
+}
+
+/**
+ * 1.3.33 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): Zeile im Reiter Test -
+ * faellt das gespeicherte Themen-Praefix auf einen gemeinsamen Bereich unter haus/? Speichern und Zurueckspielen
+ * weisen ein solches Praefix ab; ein schon gespeichertes bleibt in Betrieb und ist hier rot, grau bei ausgeschaltetem MQTT.
+ * Liste und Pruefung aus dem gemeinsamen Modul haus_bereiche.php. Rueckgabe array(stand, html).
+ */
+function dk_pruef_praefix_haus($cfg)
+{
+    $p = (isset($cfg['mqtt_praefix']) && (string) $cfg['mqtt_praefix'] !== '' ? (string) $cfg['mqtt_praefix'] : 'dockerng');
+    $b = hb_bereich($p);
+    if ($b !== '') {
+        if (!(!empty($cfg['mqtt_aktiv']))) {
+            return array(-1, sprintf(dk_t('HAUSBEREICH.A_AUS'), strval($p), strval($b)));
+        }
+        return array(0, sprintf(dk_t('HAUSBEREICH.A_NEIN'), strval($p), strval($b)));
+    }
+    return array(1, sprintf(dk_t('HAUSBEREICH.A_JA'), strval($p)));
+}
+
+/**
+ * 1.3.33: einmal je Aenderung eine Protokollzeile, solange das Praefix auf einen gemeinsamen Bereich faellt; der
+ * Versand bleibt, wie er ist. Gemerkt in praefix_haus_gemeldet.txt im Datenordner. Rueckgabe der Bereich oder ''.
+ */
+function dk_praefix_haus_melden($cfg, $merk = null)
+{
+    $p = (isset($cfg['mqtt_praefix']) && (string) $cfg['mqtt_praefix'] !== '' ? (string) $cfg['mqtt_praefix'] : 'dockerng');
+    if ($merk === null) {
+        $merk = dk_paths()['datadir'] . '/praefix_haus_gemeldet.txt';
+    }
+    $b = hb_melden_faellig($p, $merk);
+    if ($b !== '') {
+        dk_log(hb_logtext($p, $b));
+    }
+    return $b;
+}
+
+/* ---------------- Statusmeldungen an SignalBot (1.3.33, gemeinsames Modul meldung.php) ----------------
+ *
+ * Auftrag des Hausherrn 23.11.2026, Entscheidungen 23./24.11.2026: dieselben Anlaesse wie die Ansage, eigener Haken je
+ * Anlass, ab Werk aus; Sperre, Bremse und Versand im Modul. Die Erkennung laeuft auch ohne Ausgabeart, wenn eine Meldung
+ * eingeschaltet ist (dk_meld_aktiv()), und legt einen Anlass hin, wenn Ansage ODER Meldung ihn will
+ * (dk_meld_will()); der Sender trennt die Wege wieder (dk_meld_nur_ansage()).
+ */
+
+/** Die meldbaren Anlaesse: Name => Beschriftung (dieselben wie die Ansage). */
+function dk_meld_anlaesse()
+{
+    return array('docker' => dk_t('DURCHSAGE.A_DOCKER'), 'container' => dk_t('DURCHSAGE.A_CONTAINER'), 'platz' => dk_t('DURCHSAGE.A_PLATZ'), 'wieder' => dk_t('DURCHSAGE.A_WIEDER'));
+}
+
+/** Die ab-Werk-Haken der Ansage dieser Linie: so stehen auch die Haken der Meldung, solange der Block nie gespeichert ist. */
+function dk_meld_haken_vorgabe()
+{
+    return array('docker' => 1, 'container' => 1, 'platz' => 1, 'wieder' => 1);
+}
+
+/** Ist der Haken dieses Anlasses fuer die ANSAGE gesetzt? */
+function dk_ansage_anlass_sprache($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = dk_config(); }
+    $anl = dk_ansage_anlaesse(); return isset($anl[$a]) && is_array($cfg) && !empty($cfg[$anl[$a]]);
+}
+
+/** Der wirksame Block 'meldung' fuer den Betrieb (ungueltig gespeichert gilt als aus und wird im Formular genannt). */
+function dk_meld_block($cfg = null)
+{
+    if ($cfg === null) { $cfg = dk_config(); }
+    list($b) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, dk_meld_anlaesse(), dk_meld_haken_vorgabe());
+    return $b;
+}
+
+/** Die Beanstandungen eines gespeicherten Blocks (leer = gueltig). */
+function dk_meld_bean($cfg = null)
+{
+    if ($cfg === null) { $cfg = dk_config(); }
+    list(, $f) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, dk_meld_anlaesse(), dk_meld_haken_vorgabe());
+    return $f;
+}
+
+/** Ist irgendein Anlass zur Meldung eingeschaltet? Dann laeuft die Erkennung auch ohne Ausgabeart. */
+function dk_meld_aktiv($cfg = null)
+{
+    return meld_irgendein_an(dk_meld_block($cfg));
+}
+
+/** Will die Ansage ODER die Meldung diesen Anlass? */
+function dk_meld_will($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = dk_config(); }
+    return dk_ansage_anlass_sprache($a, $cfg) || meld_anlass_an(dk_meld_block($cfg), (string) $a);
+}
+
+/** Der Kontext des Moduls: Datenordner (data/plugins/<ordner>, daraus der Absender) und Texte - wie bei der Ansage. */
+function dk_meld_k()
+{
+    return dk_ansage_k();
+}
+
+/** Fuer die Ansage nur Eintraege, deren Ansage-Haken gesetzt ist; ein Eintrag ohne bekannten Anlass bleibt wie bisher. */
+function dk_meld_nur_ansage(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = dk_config(); }
+    $anl = dk_meld_anlaesse();
+    $aus = array();
+    foreach ($l as $e) {
+        if (is_array($e) && array_key_exists(meld_anlass_von($e), $anl) && !dk_ansage_anlass_sprache(meld_anlass_von($e), $cfg)) { continue; }
+        $aus[] = $e;
+    }
+    return $aus;
+}
+
+/** Die Eintraege an SignalBot melden. Protokoll: eine Zeile, wenn gesendet oder gescheitert (nie der Text). */
+function dk_meld_senden(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = dk_config(); }
+    $b = dk_meld_block($cfg);
+    if (empty($b['ein']) || !$l) { return null; }
+    $a = meld_regel_senden($l, $b, dk_meld_k());
+    if ($a['regel'] === '' || in_array($a['regel'], array('BREMSE', 'STAND', 'ORDNER'), true)) {
+        dk_log(meld_regel_kurz($a));
+    }
+    return $a;
+}
+
+/** Der Knopf "Testmeldung senden": array(angenommen, Satz). Geht an Haken, Sperre und Bremse vorbei. */
+function dk_meld_test()
+{
+    $r = meld_testmeldung(dk_meld_k());
+    dk_log('Testmeldung an SignalBot: ' . ($r[0] ? 'angenommen' : 'nicht angenommen'));
+    return $r;
+}
+
+/** Der Block im Einstellungsformular (unter den Ansage-Regeln, im selben Formular), mit Lage und Knopf. */
+function dk_meld_form_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = dk_config(); }
+    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $k = dk_meld_k();
+    $o = array();
+    /* 1.3.33: unsichtbarer Doppel des Speicherknopfs VOR dem Knopf Testmeldung - die Eingabetaste in einem Textfeld
+     * loest den ersten Absendeknopf des Formulars aus; sie soll speichern wie bisher, nicht die Testmeldung senden. */
+    $o[] = '<button data-role="none" type="submit" name="speichern" value="1" tabindex="-1" aria-hidden="true" style="position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden"></button>';
+    $o[] = '<h3>' . $e(meld_t('TITEL', $k)) . '</h3>';
+    $o[] = meld_formular_html(dk_meld_block($cfg), dk_meld_anlaesse(), array(), $k);
+    list(, $lage) = meld_pruefzeile(dk_meld_block($cfg), dk_meld_bean($cfg), $k);
+    $o[] = '<div class="sm-hilfe">' . $e(meld_t('F_TEST', $k) . ' ' . $lage) . '</div>';
+    $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="meld_test" value="1">'
+         . $e(meld_t('K_TEST', $k)) . '</button></div>';
+    return implode("\n", $o) . "\n";
+}
+
+/**
+ * Beim Wechsel des Befundes aus dem Minutentakt (1.3.33, Entscheidung des Hausherrn 24.11.2026, F2): derselbe Anlass und
+ * Satz wie die Ansage (dk_ansage_zu()), an SignalBot, wenn der Block an und der Haken des Anlasses gesetzt ist - unabhaengig
+ * von der Ausgabeart. Die Entwarnung nur nach einem Befund, der selbst gemeldet werden kann (nicht nach TAKT_*). Sperre je
+ * Befundkennung und Bremse im Modul. Rueckgabe das Ergebnis von dk_meld_senden() oder null (nichts zu melden).
+ */
+function dk_meld_befund(array $befund, $vorher, $cfg = null)
+{
+    if ($cfg === null) { $cfg = dk_config(); }
+    if (!dk_meld_aktiv($cfg)) { return null; }
+    $zu = null;
+    $schl = '';
+    if ((int) $befund['schwere'] <= 4) {
+        $zu = dk_ansage_zu($befund['kennung']);
+        $schl = (string) $befund['kennung'];
+    } elseif ((string) $vorher !== '' && dk_ansage_zu($vorher) !== null) {
+        $zu = array('wieder', dk_t('DURCHSAGE.TEXT_WIEDER'));
+        $schl = 'OK';
+    }
+    if ($zu === null) { return null; }
+    $satz = trim(html_entity_decode(strip_tags($zu[1]), ENT_QUOTES, 'UTF-8'));
+    return dk_meld_senden(array(array('schluessel' => $zu[0] . '|' . $schl, 'anlass' => $zu[0], 'text' => $satz)), $cfg);
 }

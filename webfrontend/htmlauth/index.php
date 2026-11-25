@@ -216,6 +216,28 @@ if (($_POST['download'] ?? '') === 'xml_in') {
     exit;
 }
 
+/* ---------------- Lade-Beanstandungen: angezeigte Werte uebernehmen (1.3.33) ----------------
+ * Nur mit gesetztem Haken (Entscheidung des Hausherrn 24.11.2026, "Haken im gelben Kasten"); ohne ihn bleibt die Datei
+ * byte-gleich. Geschrieben ohne "Dateiwert behalten". */
+if (sicherung_lade_eingang($_POST) !== '') {
+    $dk_lb = dk_sicherung_beschreibung();
+    $dk_lreiter = substr((string) ($_POST['activetab'] ?? 'tab-settings'), 4);
+    if (sicherung_lade_eingang($_POST) !== 'ja') {
+        dk_weiter($dk_lreiter, array('fehler' => array(dk_e(sicherung_t('K_LADE_HAKEN_FEHLT', $dk_lb)))));
+    }
+    $dk_ld = dk_lade_roh();
+    $dk_lv = dk_config();
+    $dk_un = array();
+    if ($dk_ld !== null) {
+        list($dk_lneu, $dk_un) = sicherung_lade_uebernehmen_stand($dk_ld, $dk_lv, sicherung_lade_beanstandungen($dk_lb, $dk_ld, $dk_lv));
+        if ($dk_un && !dk_config_schreiben($dk_lneu, false)) {
+            dk_weiter($dk_lreiter, array('fehler' => array(dk_t('FEHLER.SCHREIBEN'))));
+        }
+    }
+    if ($dk_un) { dk_log('Lade-Beanstandungen: angezeigte Werte uebernommen: ' . implode(', ', array_map('sicherung_name', $dk_un))); }
+    dk_weiter($dk_lreiter, array('meldung' => sprintf(sicherung_t('K_LADE_UEBERNOMMEN', $dk_lb), implode(', ', $dk_un))));
+}
+
 /* ---------------- Speichern ---------------- */
 if (($_POST['speichern'] ?? '') === '1') {
     $dk_neu = $dk_cfg;
@@ -299,6 +321,13 @@ if (($_POST['speichern'] ?? '') === '1') {
     foreach ($dk_tbean as $dk_tb) { $dk_beanstandet[] = dk_ziele_x2_name($dk_tb); }     // 1.3.20: name[N] -> name.N
     if (!$dk_tmangel) { $dk_neu['tts'] = $dk_tneu; }
     foreach (dk_ansage_anlaesse() as $dk_ak) { $dk_neu[$dk_ak] = isset($_POST[$dk_ak]) ? 1 : 0; }
+    /* 1.3.33: der Block 'Meldungen an SignalBot' (eine Beanstandung haelt das Speichern an, wie die Ansage). */
+    $dk_mmangel = array();
+    $dk_mbean = array();
+    $dk_neu['meldung'] = meld_formular_lesen($_POST, isset($dk_cfg['meldung']) ? $dk_cfg['meldung'] : null, dk_meld_anlaesse(),
+                                             $dk_mmangel, $dk_mbean, dk_meld_k(), dk_meld_haken_vorgabe());
+    foreach ($dk_mmangel as $dk_mm) { $dk_fehler[] = dk_e($dk_mm['text']); }
+    foreach ($dk_mbean as $dk_mb) { $dk_beanstandet[] = $dk_mb; }
 
     $dk_neu['melden_aktiv']  = isset($_POST['melden_aktiv']) ? 1 : 0;
     $dk_neu['updates_aktiv'] = isset($_POST['updates_aktiv']) ? 1 : 0;
@@ -478,6 +507,11 @@ if (isset($_POST['neustart_container'])) {
  * Ins Protokoll nur die Kurzform ohne Text und Token. */
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
  * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+/* 1.3.33: Testmeldung an SignalBot (Knopf unter den Ansage-Regeln). */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['meld_test'])) {
+    list($meld_ok, $meld_satz) = dk_meld_test();
+    if ($meld_ok) { dk_weiter('settings', array('meldung' => dk_e($meld_satz))); } else { dk_weiter('settings', array('fehler' => array(dk_e($meld_satz)))); }
+}
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
     $dk_tk = dk_ansage_k();
     $dk_tnur = (isset($_POST['ansage_test_ziel']) && dk_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
@@ -969,6 +1003,11 @@ if (class_exists('LBWeb', false)) {
 <?php foreach ($dk_fehler as $dk_f) { ?>
 <div class="sm-warnung"><?= $dk_f ?></div>
 <?php } ?>
+<?php /* 1.3.33: Lade-Beanstandungen (Regeln/05) - gelber Kasten; einmal je Aenderung ins Protokoll. */
+$dk_lade = dk_lade_beanstandungen();
+dk_lade_melden($dk_lade); ?>
+<?= sicherung_lade_kasten(dk_sicherung_beschreibung(), isset($dk_lade) ? $dk_lade : dk_lade_beanstandungen(),
+        '<input data-role="none" type="hidden" name="fmt" value="' . dk_e($dk_fmt) . '"><input data-role="none" type="hidden" name="activetab" value="' . dk_e($dk_tab) . '">') ?>
 <?php if (dk_eingaben_aktiv() !== '') { ?>
 <div class="sm-hinweis"><?= dk_t('EINST.EINGABEN') ?></div>
 <?php } ?>
@@ -1333,6 +1372,7 @@ foreach ($dk_fehlende as $dk_fn) { ?>
     /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
     'ziele' => dk_mit_zielen(),
     'ziele_post' => dk_eingaben_aktiv() === 'settings' ? dk_ziele_x2_post(dk_eingaben_setzen()['werte']) : null), dk_ansage_k()); ?>
+<?= dk_meld_form_html($dk_cfg) ?>
 <div class="sm-feld">
 	<label><input data-role="none" type="checkbox" name="token_neu" value="1"<?= dk_markierung('token_neu') ?>> <?= dk_e(dk_t('EINST.L_TOKENNEU')) ?></label>
 	<p class="sm-hilfe"><?= dk_t('EINST.H_TOKENNEU') ?></p>
@@ -1777,6 +1817,12 @@ ob_start();
 ?>
 <table class="sm-tbl">
 <tr><th><?= dk_e(dk_t('TEST.T_FRAGE')) ?></th><th><?= dk_e(dk_t('TEST.T_ANTWORT')) ?></th></tr>
+<?php /* 1.3.33: Lade-Beanstandungen (Regeln/05, Sicherungsmodul 1.3.0) - rot, solange ein gespeicherter Wert beim Laden
+   nicht so gilt, wie er gespeichert ist. */
+$dk_lb = dk_sicherung_beschreibung();
+$dk_la = dk_lade_beanstandungen(); ?>
+<tr><td><?= dk_e(sicherung_t('K_LADE_FRAGE', $dk_lb)) ?></td>
+	<td class="<?= $dk_la ? 'sm-aus' : 'sm-an' ?>"><?= $dk_la ? implode('<br>', sicherung_lade_saetze($dk_lb, $dk_la)) : dk_e(sicherung_t('K_LADE_KEINE', $dk_lb)) ?></td></tr>
 <tr><td><?= dk_e(dk_t('TEST.F_DOCKER')) ?></td>
 	<td class="<?= $dk_da !== '' ? 'sm-an' : 'sm-aus' ?>"><?= $dk_da !== '' ? '&#10003; ' . dk_e($dk_da) : '&#10007;' ?></td></tr>
 <tr><td><?= dk_e(dk_t('TEST.F_VERSION')) ?></td>
@@ -1827,6 +1873,10 @@ $dk_mv_gemessen = $dk_mv_alter >= 0 && $dk_mv_alter <= dk_takt_grenze()
                   && ((int) ($dk_mv['gesendet'] ?? 0) + (int) ($dk_mv['gescheitert'] ?? 0)) > 0;
 $dk_mqtt_weg = $dk_mqttlage['udpport'] && $dk_mqttlage['autostart'];
 ?>
+<?php /* 1.3.33: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)? */
+$dk_hb = dk_pruef_praefix_haus($dk_cfg); ?>
+<tr><td><?= dk_e(dk_t('HAUSBEREICH.F_TEST')) ?></td>
+	<td<?= $dk_hb[0] === 1 ? ' class="sm-an"' : ($dk_hb[0] === 0 ? ' class="sm-aus"' : '') ?>><?= $dk_hb[0] === 1 ? '&#10003; ' : ($dk_hb[0] === 0 ? '&#10007; ' : '') ?><?= dk_e($dk_hb[1]) ?></td></tr>
 <?php if (!$dk_cfg['mqtt_aktiv']) { ?>
 <tr><td><?= dk_e(dk_t('TEST.F_MQTT_EINGESTELLT')) ?></td>
 	<td><?= dk_e(dk_t('TEST.A_MQTT_AUS')) ?></td></tr>
