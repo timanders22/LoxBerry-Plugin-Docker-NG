@@ -14,6 +14,24 @@
 # D2/D15 (1.3.19): Wurzel in Hausform; Rueckfall DREI Ebenen vom Ablageort data/system/uninstall/<name> (Regeln/06;
 # bis 1.3.18 zwei - das traf data/). Keine Wurzel oder ein unbrauchbarer Ordnername: es wird NICHTS geloescht und
 # nichts beendet (Rueckgabe 0 - die Deinstallation des Plugins selbst laeuft weiter).
+# [upgrade_daten] Eine liegengebliebene Sicherung des Datenordners (gemeinsamer Baustein upgrade_daten.sh)
+# [upgrade_daten] mit abraeumen - sie kann Zugangsdaten aus dem Datenordner tragen (Regeln/06).
+case "$3" in
+    ''|.|..|*/*) ;;
+    *)  if [ -n "$5" ] && [ -d "$5/data/plugins" ] && [ -f "$5/config/system/general.json" ]; then
+            for UPGD_R in "$5/data/plugins/$3.upgrade_daten" "$5/data/plugins/$3.upgrade_daten.neu" \
+                          "$5/data/plugins/$3.upgrade_daten.alt"; do
+                [ -e "$UPGD_R" ] || [ -L "$UPGD_R" ] || continue
+                rm -rf "$UPGD_R"
+                if [ -e "$UPGD_R" ] || [ -L "$UPGD_R" ]; then
+                    echo "<WARNING> Die Sicherung des Datenordners liess sich nicht entfernen: $UPGD_R"
+                else
+                    echo "<OK> Sicherung des Datenordners entfernt: $UPGD_R"
+                fi
+            done
+        fi ;;
+esac
+
 dk_ist_wurzel() {
     [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ] \
         && [ -f "$1/config/system/general.json" ]
